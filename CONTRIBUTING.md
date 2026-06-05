@@ -16,11 +16,9 @@ step.
 
 ## Development Setup
 
-Requires Node.js 20 or later. There are no dependencies to install.
+- Node.js 20 or later
 
-```bash
-node --version  # must be >= 20
-```
+No dependencies to install.
 
 ## Local Verification
 
