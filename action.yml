@@ -1,0 +1,63 @@
+---
+name: 'Shipit'
+description: 'Create a release tag, create a GitHub Release, upload assets, and maintain floating tags.'
+author: 'goeselt'
+
+inputs:
+  release-tag:
+    description: 'Release tag name, for example v1.2.3.'
+    required: true
+  create-tag:
+    description: 'Create and push the release tag when it does not already exist.'
+    required: false
+    default: 'true'
+  create-release:
+    description: 'Create the GitHub Release. Set false when another tool, such as GoReleaser, owns the release.'
+    required: false
+    default: 'true'
+  signing-key:
+    description: 'Base64-encoded GPG private key. When set, all annotated tags created by this action are signed.'
+    required: false
+    default: ''
+  assets:
+    description: 'Newline-separated list of asset files or glob patterns to upload.'
+    required: false
+    default: ''
+  major-tag:
+    description: 'Floating major tag to update, for example v1.'
+    required: false
+    default: ''
+  minor-tag:
+    description: 'Floating minor tag to update, for example v1.2.'
+    required: false
+    default: ''
+  github-token:
+    description: 'GitHub token. Defaults to github.token.'
+    required: false
+    default: ${{ github.token }}
+  git-user-name:
+    description: 'Git user.name used for annotated tags.'
+    required: false
+    default: ''
+  git-user-email:
+    description: 'Git user.email used for annotated tags.'
+    required: false
+    default: ''
+
+outputs:
+  tag-created:
+    description: 'Whether the release tag was created by this action.'
+  release-created:
+    description: 'Whether the GitHub Release was created by this action.'
+  release-url:
+    description: 'URL of the created or existing release.'
+  assets-uploaded:
+    description: 'Number of uploaded assets.'
+  major-tag-updated:
+    description: 'Whether the floating major tag was updated.'
+  minor-tag-updated:
+    description: 'Whether the floating minor tag was updated.'
+
+runs:
+  using: node20
+  main: index.js

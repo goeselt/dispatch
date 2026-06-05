@@ -1,0 +1,11 @@
+{
+  "name": "shipit",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
