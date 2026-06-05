@@ -34,3 +34,6 @@ jobs:
 
       - name: Run Tests
         run: npm test
+
+      - name: Pedant
+        uses: goeselt/pedant@1ba1298d0fb09c9a83e161686d6fdd0029ca8897 # v1.1.0
