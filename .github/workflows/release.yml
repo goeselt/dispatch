@@ -37,7 +37,7 @@ jobs:
 
       - id: bumpkin
         name: Resolve Version
-        uses: goeselt/bumpkin@b7b8dc09745b98e0fc23e11e1349bf63f470c65c # v1.0.0
+        uses: goeselt/bumpkin@8e5d31105440aa42cd53d50b22c954be38bc2dd0 # v1.0.0
         with:
           initial-version: '1.0.0'
 
