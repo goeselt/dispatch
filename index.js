@@ -24,7 +24,7 @@ function exec(name, args, { allowFailure = false, input } = {}) {
     const stdout = err.stdout?.toString() ?? ''
     const stderr = err.stderr?.toString() ?? err.message
     if (allowFailure) return { status: err.status ?? 1, stdout, stderr }
-    throw new Error(`${name} ${args.join(' ')}: ${stderr.trim() || stdout.trim() || err.message}`)
+    throw new Error(`${name} ${args.join(' ')}: ${stderr.trim() || stdout.trim() || err.message}`, { cause: err })
   }
 }
 
