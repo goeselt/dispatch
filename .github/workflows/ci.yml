@@ -25,8 +25,8 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - name: Validate PR Title
-        uses: goeselt/bumpkin@8e5d31105440aa42cd53d50b22c954be38bc2dd0 # v1.0.1
+      - name: Validate Intent
+        uses: goeselt/intent@d168da88e1330163fb8943b119685d2af453fd8d # v1.0.2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
