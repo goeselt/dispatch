@@ -32,26 +32,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 0 # bumpkin needs full history to find the previous release tag
+          fetch-depth: 0 # intent release needs full history to find the previous release tag
           token: ${{ steps.app.outputs.token }}
 
-      - id: bumpkin
-        name: Resolve Version
-        uses: goeselt/bumpkin@8e5d31105440aa42cd53d50b22c954be38bc2dd0 # v1.0.0
+      - id: intent
+        name: Intent Release
+        uses: goeselt/intent@d168da88e1330163fb8943b119685d2af453fd8d # v1.0.2
         with:
           initial-version: '1.0.0'
 
-      - name: Run Tests
-        if: steps.bumpkin.outputs.release-needed == 'true'
-        run: npm test
-
-      - name: Ship
-        if: steps.bumpkin.outputs.release-needed == 'true'
+      - name: Release
+        if: steps.intent.outputs.release-needed == 'true'
         uses: ./
         with:
-          release-tag: ${{ steps.bumpkin.outputs.release-tag }}
-          major-tag: ${{ steps.bumpkin.outputs.major-tag }}
-          minor-tag: ${{ steps.bumpkin.outputs.minor-tag }}
+          release-tag: ${{ steps.intent.outputs.release-tag }}
+          major-tag: ${{ steps.intent.outputs.major-tag }}
+          minor-tag: ${{ steps.intent.outputs.minor-tag }}
           github-token: ${{ steps.app.outputs.token }}
           git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
           git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}

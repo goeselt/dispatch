@@ -1,7 +1,7 @@
 # Dispatch
 
 GitHub Action that creates a release tag, creates a GitHub Release, uploads assets, and maintains floating major/minor
-tags. Designed as the publish step after [`goeselt/bumpkin`](https://github.com/goeselt/bumpkin) resolves the next
+tags. Designed as the publish step after [`goeselt/intent`](https://github.com/goeselt/intent) resolves the next
 semantic version. Use it as [`goeselt/dispatch`](https://github.com/goeselt/dispatch).
 
 ## Quick Start
@@ -9,7 +9,7 @@ semantic version. Use it as [`goeselt/dispatch`](https://github.com/goeselt/disp
 ```yaml
 steps:
   - id: version
-    uses: goeselt/bumpkin@v1
+    uses: goeselt/intent@v1
 
   - uses: goeselt/dispatch@v1
     if: steps.version.outputs.release-needed == 'true'

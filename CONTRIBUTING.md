@@ -38,4 +38,4 @@ npm test
 ## Submitting Changes
 
 Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/). The PR title is validated
-automatically by `goeselt/bumpkin` and determines the version bump on merge.
+automatically by `goeselt/intent` and determines the version bump on merge.
