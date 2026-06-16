@@ -170,7 +170,7 @@ test('runRelease uploads assets and updates floating tags', () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url\x00--jq\x00.url': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes': {
+    'gh\x00release\x00create\x00v1.2.3\x00dist/a.zip\x00--generate-notes': {
       stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
     },
   })
@@ -180,7 +180,7 @@ test('runRelease uploads assets and updates floating tags', () => {
   assert.equal(result.assetsUploaded, 1)
   assert.equal(result.majorTagUpdated, true)
   assert.equal(result.minorTagUpdated, true)
-  assert.equal(exec.called('gh', 'release', 'upload', 'v1.2.3', 'dist/a.zip'), true)
+  assert.equal(exec.called('gh', 'release', 'create', 'v1.2.3', 'dist/a.zip', '--generate-notes'), true)
   assert.equal(exec.called('git', 'tag', '-fa', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'), true)
   assert.equal(exec.called('git', 'push', 'origin', 'v1', '--force'), true)
   assert.equal(exec.called('git', 'push', 'origin', 'v1.2', '--force'), true)
