@@ -40,4 +40,4 @@ jobs:
         run: npm test
 
       - name: Pedant
-        uses: goeselt/pedant@28d06edbaa661680d1488f46daae7b64c2766f31 # v1.0.2
+        uses: goeselt/pedant@af85dee4cca8870ce618955da1a5de22d948d40d # v1.1.1
