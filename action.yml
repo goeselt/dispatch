@@ -1,7 +1,11 @@
 ---
-name: 'Shipit'
+name: 'Dispatch Release'
 description: 'Create a release tag, create a GitHub Release, upload assets, and maintain floating tags.'
 author: 'goeselt'
+
+branding:
+  icon: send
+  color: blue
 
 inputs:
   release-tag:

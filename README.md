@@ -1,8 +1,8 @@
-# Shipit
+# Dispatch
 
 GitHub Action that creates a release tag, creates a GitHub Release, uploads assets, and maintains floating major/minor
 tags. Designed as the publish step after [`goeselt/bumpkin`](https://github.com/goeselt/bumpkin) resolves the next
-semantic version.
+semantic version. Use it as [`goeselt/dispatch`](https://github.com/goeselt/dispatch).
 
 ## Quick Start
 
@@ -11,7 +11,7 @@ steps:
   - id: version
     uses: goeselt/bumpkin@v1
 
-  - uses: goeselt/shipit@v1
+  - uses: goeselt/dispatch@v1
     if: steps.version.outputs.release-needed == 'true'
     with:
       release-tag: ${{ steps.version.outputs.release-tag }}
@@ -24,7 +24,7 @@ steps:
 ### Release With Binary Assets
 
 ```yaml
-- uses: goeselt/shipit@v1
+- uses: goeselt/dispatch@v1
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     major-tag: ${{ steps.version.outputs.major-tag }}
@@ -40,7 +40,7 @@ Glob patterns are supported: `dist/*.tar.gz`.
 ### Tag Only (GoReleaser Owns the Release)
 
 ```yaml
-- uses: goeselt/shipit@v1
+- uses: goeselt/dispatch@v1
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     create-release: false
@@ -57,7 +57,7 @@ Pass a base64-encoded GPG private key to sign all annotated tags created by the 
 with `git verify-tag <tag>` after importing your public key.
 
 ```yaml
-- uses: goeselt/shipit@v1
+- uses: goeselt/dispatch@v1
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     major-tag: ${{ steps.version.outputs.major-tag }}
@@ -76,7 +76,7 @@ Publish the corresponding public key on a keyserver or in your repository so con
 ### Elevated Permissions via GitHub App Token
 
 The default `GITHUB_TOKEN` cannot push tags that trigger downstream workflows. Use a GitHub App token for the checkout
-and pass it to shipit:
+and pass it to dispatch:
 
 ```yaml
 - id: app
@@ -89,13 +89,31 @@ and pass it to shipit:
   with:
     token: ${{ steps.app.outputs.token }}
 
-- uses: goeselt/shipit@v1
+- uses: goeselt/dispatch@v1
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     github-token: ${{ steps.app.outputs.token }}
     git-user-name: ${{ steps.app.outputs.app-slug }}[bot]
     git-user-email: ${{ steps.app.outputs.app-slug }}[bot]@users.noreply.github.com
 ```
+
+## Retry-Safe Workflows
+
+Dispatch is designed to be safe to rerun for the same `release-tag`: it reuses an existing tag, reuses an existing
+published GitHub Release, and updates floating tags after the concrete release exists.
+
+The workflow must still call dispatch on reruns of a partially completed release. This matters when an earlier step
+persists the version bump, for example by committing `package.json`, before dispatch creates the tag or GitHub Release.
+If a later publish step fails and the rerun gates dispatch on "a new bump is needed", the rerun may skip dispatch
+forever because the bump already happened.
+
+Prefer deriving `release-tag` from persistent state and running dispatch whenever that tag is not fully released, not
+only when the current run just produced a fresh version bump. A retry-safe flow should be able to continue these states:
+
+- version bump committed, release tag missing: dispatch creates the tag and release.
+- release tag exists, GitHub Release missing: dispatch creates the release.
+- release tag and published GitHub Release exist: dispatch reuses both and refreshes floating tags.
+- existing draft release: dispatch stops and asks you to delete or publish it before rerunning.
 
 ## Inputs
 
@@ -122,6 +140,12 @@ and pass it to shipit:
 | `assets-uploaded`   | Number of uploaded assets.                  |
 | `major-tag-updated` | Whether the floating major tag was updated. |
 | `minor-tag-updated` | Whether the floating minor tag was updated. |
+
+## GitHub Step Summary
+
+Dispatch writes a concise release summary to `GITHUB_STEP_SUMMARY` when GitHub Actions provides it. The summary includes
+the release tag, whether the concrete tag and GitHub Release were created or reused, the release URL, uploaded asset
+count, and floating tag updates. Failed runs write a failure summary with the release tag and error message.
 
 ## Contributing
 

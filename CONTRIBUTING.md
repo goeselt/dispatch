@@ -1,9 +1,9 @@
-# Contributing to Shipit
+# Contributing to Dispatch
 
 ## Design
 
 Pure Node.js standard library -- no runtime dependencies, no build step. `index.js` is committed as-is and referenced
-directly by `action.yml` (`runs.using: node20`).
+directly by `action.yml` (`runs.using: node24`).
 
 | File         | Responsibility                                                        |
 | ------------ | --------------------------------------------------------------------- |
@@ -29,7 +29,7 @@ docker pull ghcr.io/goeselt/pedant:latest
 docker run --rm -v "$(pwd):/work" ghcr.io/goeselt/pedant:latest
 ```
 
-Run the unit tests from `project/shipit/`:
+Run the unit tests from `project/dispatch/`:
 
 ```bash
 npm test

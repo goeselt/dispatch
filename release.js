@@ -19,6 +19,16 @@ function parseAssets(input) {
     .filter(Boolean)
 }
 
+function tableValue(value) {
+  const text = String(value || '-')
+  return text.replace(/\r?\n/g, '<br>').replace(/\|/g, '\\|')
+}
+
+function statusValue(done, active = true) {
+  if (!active) return 'skipped'
+  return done ? 'created' : 'reused'
+}
+
 function hasGlobMeta(pattern) {
   return /[*?[]/.test(pattern)
 }
@@ -77,7 +87,7 @@ function resolveAssets(entries, cwd = process.cwd()) {
 
     const matches = expandGlob(entry, cwd)
     if (matches.length === 0) {
-      process.stdout.write(`::warning title=Shipit::asset pattern matched no files: ${entry}\n`)
+      process.stdout.write(`::warning title=Dispatch::asset pattern matched no files: ${entry}\n`)
     }
     assets.push(...matches)
   }
@@ -94,6 +104,10 @@ function configureGitUser(exec, name, email) {
   if (email) exec('git', ['config', 'user.email', email])
 }
 
+function checkReleaseAuth(exec) {
+  exec('gh', ['auth', 'status'])
+}
+
 function tagExists(exec, tag) {
   const result = exec('git', ['ls-remote', '--tags', 'origin', tag], { allowFailure: true })
   if (result.status !== 0) throw new Error(`could not check remote tag ${tag}: ${result.stderr || result.stdout}`)
@@ -102,21 +116,45 @@ function tagExists(exec, tag) {
 
 function createTag(exec, tag) {
   exec('git', ['tag', '-a', tag, '-m', `Release ${tag}`])
-  exec('git', ['push', 'origin', tag])
+  try {
+    exec('git', ['push', 'origin', tag])
+  } catch (err) {
+    exec('git', ['tag', '-d', tag], { allowFailure: true })
+    throw err
+  }
+}
+
+function fetchTag(exec, tag) {
+  exec('git', ['fetch', '--force', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
+}
+
+// `gh release view` exits non-zero with "release not found" (or an HTTP 404 from the underlying API call) when the
+// tag has no release. Any other non-zero exit (auth, rate limit, network) must not be mistaken for a missing
+// release, or this action would try to create a release that already exists.
+function isMissingReleaseError(output) {
+  return /(^|[\s:])(?:release )?not found(?:[\s.]|$)|HTTP 404/i.test(output)
 }
 
 function releaseView(exec, tag) {
-  const result = exec('gh', ['release', 'view', tag, '--json', 'url', '--jq', '.url'], { allowFailure: true })
-  if (result.status !== 0) return { exists: false, url: '' }
-  return { exists: true, url: result.stdout.trim() }
+  const result = exec('gh', ['release', 'view', tag, '--json', 'url,isDraft'], { allowFailure: true })
+  if (result.status !== 0) {
+    const output = result.stderr || result.stdout
+    if (isMissingReleaseError(output)) return { exists: false, url: '' }
+    throw new Error(`could not check release ${tag}: ${output}`)
+  }
+  let release
+  try {
+    release = JSON.parse(result.stdout)
+  } catch (err) {
+    throw new Error(`could not parse release ${tag} response: ${result.stdout}`, { cause: err })
+  }
+  return { exists: true, url: release.url || '', isDraft: Boolean(release.isDraft) }
 }
 
-// Assets are passed to `gh release create` directly rather than uploaded in a follow-up `gh release upload` call.
-// With "Enable release immutability" on, GitHub freezes the release immediately after creation, so a separate upload
-// fails with "Cannot upload assets to an immutable release".
-// Attaching assets at creation time is a single atomic operation and works either way.
+// Assets are passed to `gh release create` directly so GitHub CLI can create a draft, upload assets, and publish it.
+// With release immutability on, a separate upload after publishing fails because assets can no longer be modified.
 function createRelease(exec, tag, assets = []) {
-  const result = exec('gh', ['release', 'create', tag, ...assets, '--generate-notes'])
+  const result = exec('gh', ['release', 'create', tag, ...assets, '--generate-notes', '--verify-tag'])
   return result.stdout.trim()
 }
 
@@ -127,14 +165,53 @@ function updateFloatingTag(exec, floatingTag, releaseTag) {
   return true
 }
 
+function renderSummaryTable(rows) {
+  const lines = [
+    '## Dispatch Release',
+    '',
+    '| Field | Value |',
+    '| --- | --- |',
+    ...rows.map(([name, value]) => `| ${name} | ${value} |`),
+    '',
+  ]
+  return lines.join('\n')
+}
+
+function floatingTagValue(tag, updated) {
+  return tag ? `${tableValue(tag)} ${updated ? 'updated' : 'not updated'}` : '-'
+}
+
+function buildStepSummary(inputs, result) {
+  const releaseUrl = result.releaseUrl ? `[${tableValue(result.releaseUrl)}](${result.releaseUrl})` : '-'
+  return renderSummaryTable([
+    ['Release tag', `\`${tableValue(inputs.releaseTag)}\``],
+    ['Tag', statusValue(result.tagCreated)],
+    ['GitHub Release', statusValue(result.releaseCreated, inputs.createRelease)],
+    ['Release URL', releaseUrl],
+    ['Assets uploaded', `\`${result.assetsUploaded}\``],
+    ['Major floating tag', floatingTagValue(inputs.majorTag, result.majorTagUpdated)],
+    ['Minor floating tag', floatingTagValue(inputs.minorTag, result.minorTagUpdated)],
+  ])
+}
+
+function buildFailureSummary(error, inputs = {}) {
+  return renderSummaryTable([
+    ['Status', 'failed'],
+    ['Release tag', inputs.releaseTag ? `\`${tableValue(inputs.releaseTag)}\`` : '-'],
+    ['Error', tableValue(error.message)],
+  ])
+}
+
 function runRelease(inputs, exec, cwd = process.cwd()) {
   if (!inputs.releaseTag) throw new Error('release-tag is required')
 
   configureGitUser(exec, inputs.gitUserName, inputs.gitUserEmail)
   if (inputs.signingKey) setupSigning(exec, inputs.signingKey)
+  if (inputs.createRelease) checkReleaseAuth(exec)
 
   let tagCreated = false
   if (tagExists(exec, inputs.releaseTag)) {
+    fetchTag(exec, inputs.releaseTag)
     process.stdout.write(`tag ${inputs.releaseTag} already exists; reusing it\n`)
   } else if (inputs.createTag) {
     createTag(exec, inputs.releaseTag)
@@ -149,6 +226,11 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
   if (inputs.createRelease) {
     const existing = releaseView(exec, inputs.releaseTag)
     if (existing.exists) {
+      if (existing.isDraft) {
+        throw new Error(
+          `release ${inputs.releaseTag} exists but is still a draft; delete or publish it before rerunning`,
+        )
+      }
       releaseUrl = existing.url
       process.stdout.write(`release ${inputs.releaseTag} already exists; reusing it\n`)
     } else {
@@ -159,7 +241,7 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
     }
   } else if (inputs.assets.length > 0) {
     process.stdout.write(
-      `::warning title=Shipit::assets specified but create-release is false; assets will not be uploaded\n`,
+      `::warning title=Dispatch::assets specified but create-release is false; assets will not be uploaded\n`,
     )
   }
 
@@ -177,9 +259,14 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
 }
 
 module.exports = {
+  buildFailureSummary,
+  buildStepSummary,
+  checkReleaseAuth,
   createRelease,
   createTag,
   expandGlob,
+  fetchTag,
+  isMissingReleaseError,
   parseAssets,
   parseBool,
   releaseView,
