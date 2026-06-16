@@ -2,7 +2,7 @@
 
 const fs = require('node:fs')
 const { execFileSync } = require('node:child_process')
-const { parseAssets, parseBool, runRelease } = require('./release.js')
+const { buildFailureSummary, buildStepSummary, parseAssets, parseBool, runRelease } = require('./release.js')
 
 function input(name, fallback = '') {
   return process.env[`INPUT_${name.toUpperCase()}`] ?? fallback
@@ -12,6 +12,12 @@ function setOutput(name, value) {
   const outputFile = process.env['GITHUB_OUTPUT']
   if (!outputFile) return
   fs.appendFileSync(outputFile, `${name}=${value}\n`)
+}
+
+function appendStepSummary(markdown) {
+  const summaryFile = process.env['GITHUB_STEP_SUMMARY']
+  if (!summaryFile) return
+  fs.appendFileSync(summaryFile, `${markdown}\n`)
 }
 
 function exec(name, args, { allowFailure = false, input } = {}) {
@@ -28,6 +34,8 @@ function exec(name, args, { allowFailure = false, input } = {}) {
   }
 }
 
+let inputs = {}
+
 try {
   const token = input('GITHUB-TOKEN')
   if (token) {
@@ -35,7 +43,7 @@ try {
   }
 
   const actor = process.env['GITHUB_ACTOR'] || 'github-actions[bot]'
-  const inputs = {
+  inputs = {
     releaseTag: input('RELEASE-TAG'),
     createTag: parseBool(input('CREATE-TAG', 'true'), 'create-tag'),
     createRelease: parseBool(input('CREATE-RELEASE', 'true'), 'create-release'),
@@ -54,11 +62,13 @@ try {
   setOutput('assets-uploaded', String(result.assetsUploaded))
   setOutput('major-tag-updated', String(result.majorTagUpdated))
   setOutput('minor-tag-updated', String(result.minorTagUpdated))
+  appendStepSummary(buildStepSummary(inputs, result))
 
   process.stdout.write(
     `tag-created=${result.tagCreated} release-created=${result.releaseCreated} assets-uploaded=${result.assetsUploaded}\n`,
   )
 } catch (err) {
-  process.stdout.write(`::error title=Shipit::${err.message}\n`)
+  appendStepSummary(buildFailureSummary(err, inputs))
+  process.stdout.write(`::error title=Dispatch::${err.message}\n`)
   process.exit(1)
 }
