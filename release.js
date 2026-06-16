@@ -111,15 +111,13 @@ function releaseView(exec, tag) {
   return { exists: true, url: result.stdout.trim() }
 }
 
-function createRelease(exec, tag) {
-  const result = exec('gh', ['release', 'create', tag, '--generate-notes'])
+// Assets are passed to `gh release create` directly rather than uploaded in a follow-up `gh release upload` call.
+// With "Enable release immutability" on, GitHub freezes the release immediately after creation, so a separate upload
+// fails with "Cannot upload assets to an immutable release".
+// Attaching assets at creation time is a single atomic operation and works either way.
+function createRelease(exec, tag, assets = []) {
+  const result = exec('gh', ['release', 'create', tag, ...assets, '--generate-notes'])
   return result.stdout.trim()
-}
-
-function uploadAssets(exec, tag, assets) {
-  if (assets.length === 0) return 0
-  exec('gh', ['release', 'upload', tag, ...assets])
-  return assets.length
 }
 
 function updateFloatingTag(exec, floatingTag, releaseTag) {
@@ -154,13 +152,10 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
       releaseUrl = existing.url
       process.stdout.write(`release ${inputs.releaseTag} already exists; reusing it\n`)
     } else {
-      releaseUrl = createRelease(exec, inputs.releaseTag)
-      releaseCreated = true
-
       const assets = resolveAssets(inputs.assets, cwd)
-      if (assets.length > 0) {
-        assetsUploaded = uploadAssets(exec, inputs.releaseTag, assets)
-      }
+      releaseUrl = createRelease(exec, inputs.releaseTag, assets)
+      releaseCreated = true
+      assetsUploaded = assets.length
     }
   } else if (inputs.assets.length > 0) {
     process.stdout.write(
@@ -193,5 +188,4 @@ module.exports = {
   setupSigning,
   tagExists,
   updateFloatingTag,
-  uploadAssets,
 }
