@@ -311,23 +311,37 @@ test('runRelease checks release context before command execution', () => {
   assert.deepEqual(exec.calls, [])
 })
 
-test('guardReleaseHead requires the checkout to match the GitHub event SHA', () => {
-  const exec = makeExec({
-    'git\x00rev-parse\x00HEAD': { stdout: 'def456\n' },
-  })
-
-  assert.throws(
-    () => guardReleaseHead(exec, inputs({ releaseContext: releaseContext({ sha: 'abc123' }) })),
-    /checked-out commit def456/,
-  )
-})
-
-test('guardReleaseHead returns the expected SHA when the checkout matches', () => {
+test('guardReleaseHead allows the checkout to match the GitHub event SHA', () => {
   const exec = makeExec({
     'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
   })
 
   assert.equal(guardReleaseHead(exec, inputs({ releaseContext: releaseContext({ sha: 'abc123' }) })), 'abc123')
+  assert.equal(
+    exec.calls.some((call) => call[0] === 'git' && call[1] === 'merge-base'),
+    false,
+  )
+})
+
+test('guardReleaseHead allows a release commit created after the GitHub event SHA', () => {
+  const exec = makeExec({
+    'git\x00rev-parse\x00HEAD': { stdout: 'def456\n' },
+    'git\x00merge-base\x00--is-ancestor\x00abc123\x00def456': { status: 0 },
+  })
+
+  assert.equal(guardReleaseHead(exec, inputs({ releaseContext: releaseContext({ sha: 'abc123' }) })), 'def456')
+})
+
+test('guardReleaseHead rejects a checkout that is unrelated to the GitHub event SHA', () => {
+  const exec = makeExec({
+    'git\x00rev-parse\x00HEAD': { stdout: 'def456\n' },
+    'git\x00merge-base\x00--is-ancestor\x00abc123\x00def456': { status: 1 },
+  })
+
+  assert.throws(
+    () => guardReleaseHead(exec, inputs({ releaseContext: releaseContext({ sha: 'abc123' }) })),
+    /not an ancestor of HEAD/,
+  )
 })
 
 test('validateFloatingTags requires tags to match the release version', () => {

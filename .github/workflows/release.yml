@@ -40,7 +40,6 @@ jobs:
         uses: goeselt/intent@f6d867043c166cdbe5c9be0ee2fbee84f2065415 # v1.1.0
         with:
           initial-version: '1.0.0'
-          pr-comment: true
 
       - name: Bump Version
         if: steps.intent.outputs.release-needed == 'true'
