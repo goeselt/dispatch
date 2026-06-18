@@ -30,7 +30,7 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_KEY }}
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0 # intent release needs full history to find the previous release tag
           token: ${{ steps.app.outputs.token }}
@@ -38,7 +38,7 @@ jobs:
 
       - id: intent
         name: Intent Release
-        uses: goeselt/intent@c524346424a2bbbb5cb1e399fb1f086236935df2 # v1.1.1
+        uses: goeselt/intent@21b70d0a25a0aae8002ca2c7fb4f4b3ba604922e # v1.1.2
         with:
           initial-version: '1.0.0'
 
