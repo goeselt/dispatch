@@ -8,6 +8,8 @@ const ASSET_HELP = 'Use a path to an existing regular file under the checked-out
 const RELEASE_CONTEXT_HELP =
   'Run dispatch from push, workflow_dispatch, or schedule on the default branch, or set allow-non-default-branch to true for an intentional branch release.'
 
+// Input parsing
+
 function parseBool(value, name) {
   const normalized = String(value ?? '')
     .trim()
@@ -23,6 +25,8 @@ function parseAssets(input) {
     .map((line) => line.trim())
     .filter(Boolean)
 }
+
+// Release context guard
 
 function inferRefType(ref) {
   if (ref?.startsWith('refs/heads/')) return 'branch'
@@ -70,6 +74,8 @@ function guardReleaseContext(inputs) {
     )
   }
 }
+
+// GitHub Actions command and summary formatting
 
 function escapeWorkflowCommand(value) {
   return String(value ?? '')
@@ -130,19 +136,7 @@ function assetsValue(inputs, result) {
   return codeValue(0)
 }
 
-function hasGlobMeta(pattern) {
-  return /[*?[]/.test(pattern)
-}
-
-function assertInsideWorkspace(workspace, target, description) {
-  const relative = path.relative(workspace, target)
-  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return
-  throw new Error(`${description} must stay inside the workspace. ${ASSET_HELP}`)
-}
-
-function realWorkspace(cwd) {
-  return fs.realpathSync(cwd)
-}
+// Tag validation
 
 function validateTagName(tag, name = 'tag') {
   if (!tag) throw new Error(`${name} is required`)
@@ -171,6 +165,22 @@ function validateTagName(tag, name = 'tag') {
 function validateOptionalTagName(tag, name) {
   if (!tag) return ''
   return validateTagName(tag, name)
+}
+
+// Asset resolution
+
+function hasGlobMeta(pattern) {
+  return /[*?[]/.test(pattern)
+}
+
+function assertInsideWorkspace(workspace, target, description) {
+  const relative = path.relative(workspace, target)
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return
+  throw new Error(`${description} must stay inside the workspace. ${ASSET_HELP}`)
+}
+
+function realWorkspace(cwd) {
+  return fs.realpathSync(cwd)
 }
 
 function globToRegExp(pattern) {
@@ -259,6 +269,8 @@ function resolveAssets(entries, cwd = process.cwd()) {
   }
   return [...new Set(assets)]
 }
+
+// Git and GitHub CLI operations
 
 function setupSigning(exec, signingKey) {
   exec('gpg', ['--import', '--batch'], { input: Buffer.from(signingKey, 'base64') })
@@ -349,6 +361,8 @@ function updateFloatingTag(exec, floatingTag, releaseTag) {
   return true
 }
 
+// Step summary and failure guidance
+
 function renderSummaryTable(rows) {
   const lines = [
     '## Dispatch Release',
@@ -420,6 +434,8 @@ function buildFailureSummary(error, inputs = {}) {
   return renderSummaryTable(rows)
 }
 
+// Release orchestration
+
 function runRelease(inputs, exec, cwd = process.cwd()) {
   if (!inputs.releaseTag) throw new Error('release-tag is required')
   validateTagName(inputs.releaseTag, 'release-tag')
@@ -483,6 +499,7 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
   }
 }
 
+// Export small helpers to keep command-heavy behavior unit-testable without touching the network.
 module.exports = {
   buildFailureSummary,
   buildStepSummary,

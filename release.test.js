@@ -70,6 +70,8 @@ function releaseContext(overrides = {}) {
   }
 }
 
+// Git/GitHub command wrappers
+
 test('setupSigning imports the GPG key and enables tag signing', () => {
   const exec = makeExec()
   setupSigning(exec, Buffer.from('fake-gpg-key').toString('base64'))
@@ -105,6 +107,8 @@ test('isMissingReleaseError recognizes only missing release responses', () => {
   assert.equal(isMissingReleaseError('HTTP 401: Bad credentials'), false)
 })
 
+// Release setup orchestration
+
 test('runRelease signs tags when signing-key is provided', () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
@@ -137,6 +141,8 @@ test('runRelease does not configure GPG when no signing-key is given', () => {
     'unexpected GPG call without signing-key',
   )
 })
+
+// Input parsing and release guards
 
 test('parseBool accepts true and false only', () => {
   assert.equal(parseBool('true', 'draft'), true)
@@ -256,6 +262,8 @@ test('runRelease checks release context before command execution', () => {
   assert.deepEqual(exec.calls, [])
 })
 
+// Step summaries and failure guidance
+
 test('buildStepSummary describes the release result', () => {
   const summary = buildStepSummary(inputs({ majorTag: 'v1', minorTag: 'v1.2' }), {
     tagCreated: true,
@@ -345,6 +353,8 @@ test('failureNextStep maps common release failures to recovery guidance', () => 
   assert.match(failureNextStep(new Error('dispatch cannot create releases from pull request events')), /default branch/)
 })
 
+// Asset resolution
+
 test('expandGlob resolves simple file globs', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
   fs.mkdirSync(path.join(dir, 'dist'))
@@ -408,6 +418,8 @@ test('createRelease separates asset names from gh flags', () => {
     true,
   )
 })
+
+// Release orchestration
 
 test('runRelease creates tag and release', () => {
   const exec = makeExec({
