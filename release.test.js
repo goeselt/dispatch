@@ -9,7 +9,9 @@ const {
   buildFailureSummary,
   buildStepSummary,
   checkReleaseAuth,
+  createRelease,
   createTag,
+  escapeWorkflowCommand,
   expandGlob,
   fetchTag,
   isMissingReleaseError,
@@ -18,6 +20,8 @@ const {
   resolveAssets,
   runRelease,
   setupSigning,
+  validateAssetPath,
+  validateTagName,
 } = require('./release.js')
 
 function makeExec(responses = {}) {
@@ -72,7 +76,7 @@ test('fetchTag refreshes the release tag from origin', () => {
 
 test('createTag deletes a local tag when pushing it fails', () => {
   const exec = makeExec({
-    'git\x00push\x00origin\x00v1.2.3': { status: 1, stderr: 'no permission' },
+    'git\x00push\x00origin\x00refs/tags/v1.2.3:refs/tags/v1.2.3': { status: 1, stderr: 'no permission' },
   })
 
   assert.throws(() => createTag(exec, 'v1.2.3'), /no permission/)
@@ -88,7 +92,7 @@ test('isMissingReleaseError recognizes only missing release responses', () => {
 
 test('runRelease signs tags when signing-key is provided', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
     'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
       stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
@@ -103,7 +107,7 @@ test('runRelease signs tags when signing-key is provided', () => {
 
 test('runRelease does not configure GPG when no signing-key is given', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
     'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
       stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
@@ -129,6 +133,25 @@ test('parseAssets trims newline-separated assets', () => {
   assert.deepEqual(parseAssets('dist/a.zip\n\n dist/b.tgz \n'), ['dist/a.zip', 'dist/b.tgz'])
 })
 
+test('escapeWorkflowCommand escapes runner command separators', () => {
+  assert.equal(escapeWorkflowCommand('bad%value\r\n::error::owned'), 'bad%25value%0D%0A::error::owned')
+})
+
+test('validateTagName rejects option-like and refspec-like names', () => {
+  assert.equal(validateTagName('v1.2.3'), 'v1.2.3')
+
+  for (const tag of ['--mirror', 'v1\n::error::owned', 'refs/heads/main:refs/tags/v1', 'v1^{}', '../v1']) {
+    assert.throws(() => validateTagName(tag, 'release-tag'), /release-tag/)
+  }
+})
+
+test('runRelease rejects unsafe release tags before command execution', () => {
+  const exec = makeExec()
+
+  assert.throws(() => runRelease(inputs({ releaseTag: '--mirror' }), exec), /release-tag must not start with -/)
+  assert.deepEqual(exec.calls, [])
+})
+
 test('buildStepSummary describes the release result', () => {
   const summary = buildStepSummary(inputs({ majorTag: 'v1', minorTag: 'v1.2' }), {
     tagCreated: true,
@@ -140,11 +163,14 @@ test('buildStepSummary describes the release result', () => {
   })
 
   assert.match(summary, /## Dispatch Release/)
-  assert.match(summary, /\| Release tag \| `v1\.2\.3` \|/)
+  assert.match(summary, /\| Release tag \| <code>v1\.2\.3<\/code> \|/)
   assert.match(summary, /\| Tag \| created \|/)
   assert.match(summary, /\| GitHub Release \| created \|/)
-  assert.match(summary, /\| Release URL \| \[https:\/\/github\.com\/org\/repo\/releases\/tag\/v1\.2\.3\]/)
-  assert.match(summary, /\| Assets uploaded \| `2` \|/)
+  assert.match(
+    summary,
+    /\| Release URL \| <a href="https:\/\/github\.com\/org\/repo\/releases\/tag\/v1\.2\.3">https:\/\/github\.com\/org\/repo\/releases\/tag\/v1\.2\.3<\/a> \|/,
+  )
+  assert.match(summary, /\| Assets uploaded \| <code>2<\/code> \|/)
   assert.match(summary, /\| Major floating tag \| v1 updated \|/)
   assert.match(summary, /\| Minor floating tag \| v1\.2 updated \|/)
 })
@@ -168,8 +194,15 @@ test('buildFailureSummary describes release failures', () => {
 
   assert.match(summary, /## Dispatch Release/)
   assert.match(summary, /\| Status \| failed \|/)
-  assert.match(summary, /\| Release tag \| `v1\.2\.3` \|/)
+  assert.match(summary, /\| Release tag \| <code>v1\.2\.3<\/code> \|/)
   assert.match(summary, /\| Error \| token \\\| denied \|/)
+})
+
+test('buildFailureSummary escapes summary HTML from untrusted text', () => {
+  const summary = buildFailureSummary(new Error('<script>alert(1)</script>'), inputs({ releaseTag: 'v1.2.3' }))
+
+  assert.match(summary, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
+  assert.doesNotMatch(summary, /<script>/)
 })
 
 test('expandGlob resolves simple file globs', () => {
@@ -185,14 +218,60 @@ test('expandGlob resolves simple file globs', () => {
 test('resolveAssets expands globs and preserves plain paths', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
   fs.mkdirSync(path.join(dir, 'dist'))
+  fs.writeFileSync(path.join(dir, 'README.md'), '')
   fs.writeFileSync(path.join(dir, 'dist', 'a.zip'), '')
 
   assert.deepEqual(resolveAssets(['README.md', 'dist/*.zip'], dir), ['README.md', 'dist/a.zip'])
 })
 
+test('validateAssetPath rejects assets outside the workspace', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
+  const dir = path.join(root, 'work')
+  fs.mkdirSync(dir)
+  fs.writeFileSync(path.join(root, 'secret.txt'), 'secret')
+
+  assert.throws(() => validateAssetPath('../secret.txt', dir), /inside the workspace/)
+  assert.throws(() => validateAssetPath(path.join(root, 'secret.txt'), dir), /relative to the workspace/)
+})
+
+test('validateAssetPath rejects symlinks that point outside the workspace', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
+  const dir = path.join(root, 'work')
+  fs.mkdirSync(path.join(dir, 'dist'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'secret.txt'), 'secret')
+  fs.symlinkSync(path.join(root, 'secret.txt'), path.join(dir, 'dist', 'secret.txt'))
+
+  assert.throws(() => validateAssetPath('dist/secret.txt', dir), /inside the workspace/)
+})
+
+test('expandGlob rejects patterns that would walk outside the workspace', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
+  const dir = path.join(root, 'work')
+  fs.mkdirSync(dir)
+  fs.writeFileSync(path.join(root, 'secret.txt'), 'secret')
+
+  assert.throws(() => expandGlob('../*.txt', dir), /inside the workspace/)
+})
+
+test('createRelease separates asset names from gh flags', () => {
+  const exec = makeExec({
+    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--\x00--repo\x00owner/repo': {
+      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
+    },
+  })
+
+  const url = createRelease(exec, 'v1.2.3', ['--repo', 'owner/repo'])
+
+  assert.equal(url, 'https://github.com/org/repo/releases/tag/v1.2.3')
+  assert.equal(
+    exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--', '--repo', 'owner/repo'),
+    true,
+  )
+})
+
 test('runRelease creates tag and release', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
     'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
       stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
@@ -205,13 +284,13 @@ test('runRelease creates tag and release', () => {
   assert.equal(result.releaseCreated, true)
   assert.equal(result.releaseUrl, 'https://github.com/org/repo/releases/tag/v1.2.3')
   assert.equal(exec.called('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3'), true)
-  assert.equal(exec.called('git', 'push', 'origin', 'v1.2.3'), true)
+  assert.equal(exec.called('git', 'push', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3'), true)
   assert.equal(exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag'), true)
 })
 
 test('runRelease checks release auth before creating a tag', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
     'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
       stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
@@ -241,7 +320,7 @@ test('runRelease fails before creating a tag when release auth fails', () => {
 
 test('runRelease reuses existing tag and release', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
       stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
     },
@@ -258,7 +337,7 @@ test('runRelease reuses existing tag and release', () => {
 
 test('runRelease fetches an existing release tag before updating floating tags', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
       stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
     },
@@ -275,7 +354,7 @@ test('runRelease fetches an existing release tag before updating floating tags',
 
 test('runRelease fails on an existing draft release instead of reusing stale state', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
       stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":true}\n',
     },
@@ -290,7 +369,7 @@ test('runRelease fails on an existing draft release instead of reusing stale sta
 
 test('runRelease fails when release lookup fails for a non-404 reason', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'HTTP 401: Bad credentials' },
   })
 
@@ -307,7 +386,7 @@ test('runRelease fails when release lookup fails for a non-404 reason', () => {
 
 test('runRelease can create only a tag for GoReleaser', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
   })
 
   const result = runRelease(inputs({ createRelease: false }), exec)
@@ -322,7 +401,7 @@ test('runRelease can create only a tag for GoReleaser', () => {
 
 test('runRelease fails when tag is missing and createTag is false', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
   })
 
   assert.throws(() => runRelease(inputs({ createTag: false }), exec), /does not exist/)
@@ -333,9 +412,9 @@ test('runRelease uploads assets and updates floating tags', () => {
   fs.mkdirSync(path.join(dir, 'dist'))
   fs.writeFileSync(path.join(dir, 'dist', 'a.zip'), '')
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00dist/a.zip\x00--generate-notes\x00--verify-tag': {
+    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--\x00dist/a.zip': {
       stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
     },
   })
@@ -345,15 +424,21 @@ test('runRelease uploads assets and updates floating tags', () => {
   assert.equal(result.assetsUploaded, 1)
   assert.equal(result.majorTagUpdated, true)
   assert.equal(result.minorTagUpdated, true)
-  assert.equal(exec.called('gh', 'release', 'create', 'v1.2.3', 'dist/a.zip', '--generate-notes', '--verify-tag'), true)
+  assert.equal(exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--', 'dist/a.zip'), true)
   assert.equal(exec.called('git', 'tag', '-fa', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'), true)
-  assert.equal(exec.called('git', 'push', 'origin', 'v1', '--force'), true)
-  assert.equal(exec.called('git', 'push', 'origin', 'v1.2', '--force'), true)
+  assert.equal(
+    exec.called('git', 'push', 'origin', 'refs/tags/v1:refs/tags/v1', '--force-with-lease=refs/tags/v1:'),
+    true,
+  )
+  assert.equal(
+    exec.called('git', 'push', 'origin', 'refs/tags/v1.2:refs/tags/v1.2', '--force-with-lease=refs/tags/v1.2:'),
+    true,
+  )
 })
 
 test('runRelease warns when assets are specified but create-release is false', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
   })
   const written = []
   const origWrite = process.stdout.write.bind(process.stdout)
@@ -371,7 +456,7 @@ test('runRelease warns when assets are specified but create-release is false', (
 
 test('runRelease updates floating tags after creating the release', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
     'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
       stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
@@ -387,9 +472,27 @@ test('runRelease updates floating tags after creating the release', () => {
   assert.ok(releaseIdx < floatingIdx, 'floating tag must be updated after release is created')
 })
 
+test('runRelease updates floating tags with an explicit force-with-lease expectation', () => {
+  const exec = makeExec({
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1': { stdout: 'abc123\trefs/tags/v1\n' },
+    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
+    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
+      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
+    },
+  })
+
+  runRelease(inputs({ majorTag: 'v1' }), exec)
+
+  assert.equal(
+    exec.called('git', 'push', 'origin', 'refs/tags/v1:refs/tags/v1', '--force-with-lease=refs/tags/v1:abc123'),
+    true,
+  )
+})
+
 test('runRelease skips asset upload when release already exists', () => {
   const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00origin\x00v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
       stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
     },

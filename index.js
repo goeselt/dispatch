@@ -1,8 +1,16 @@
 'use strict'
 
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
-const { buildFailureSummary, buildStepSummary, parseAssets, parseBool, runRelease } = require('./release.js')
+const {
+  buildFailureSummary,
+  buildStepSummary,
+  escapeWorkflowCommand,
+  parseAssets,
+  parseBool,
+  runRelease,
+} = require('./release.js')
 
 function input(name, fallback = '') {
   return process.env[`INPUT_${name.toUpperCase()}`] ?? fallback
@@ -11,7 +19,8 @@ function input(name, fallback = '') {
 function setOutput(name, value) {
   const outputFile = process.env['GITHUB_OUTPUT']
   if (!outputFile) return
-  fs.appendFileSync(outputFile, `${name}=${value}\n`)
+  const delimiter = `dispatch_${crypto.randomUUID()}`
+  fs.appendFileSync(outputFile, `${name}<<${delimiter}\n${value}\n${delimiter}\n`)
 }
 
 function appendStepSummary(markdown) {
@@ -69,6 +78,6 @@ try {
   )
 } catch (err) {
   appendStepSummary(buildFailureSummary(err, inputs))
-  process.stdout.write(`::error title=Dispatch::${err.message}\n`)
+  process.stdout.write(`::error title=Dispatch::${escapeWorkflowCommand(err.message)}\n`)
   process.exit(1)
 }

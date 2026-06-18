@@ -19,9 +19,48 @@ function parseAssets(input) {
     .filter(Boolean)
 }
 
+function escapeWorkflowCommand(value) {
+  return String(value ?? '')
+    .replace(/%/g, '%25')
+    .replace(/\r/g, '%0D')
+    .replace(/\n/g, '%0A')
+}
+
+function writeWarning(message) {
+  process.stdout.write(`::warning title=Dispatch::${escapeWorkflowCommand(message)}\n`)
+}
+
 function tableValue(value) {
   const text = String(value || '-')
-  return text.replace(/\r?\n/g, '<br>').replace(/\|/g, '\\|')
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r?\n/g, '<br>')
+    .replace(/\|/g, '\\|')
+}
+
+function codeValue(value) {
+  return `<code>${tableValue(value)}</code>`
+}
+
+function attributeValue(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function linkValue(value) {
+  const text = tableValue(value)
+  let url
+  try {
+    url = new URL(String(value || ''))
+  } catch {
+    return text
+  }
+  return url.protocol === 'http:' || url.protocol === 'https:' ? `<a href="${attributeValue(url.href)}">${text}</a>` : text
 }
 
 function statusValue(done, active = true) {
@@ -31,6 +70,39 @@ function statusValue(done, active = true) {
 
 function hasGlobMeta(pattern) {
   return /[*?[]/.test(pattern)
+}
+
+function assertInsideWorkspace(workspace, target, description) {
+  const relative = path.relative(workspace, target)
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return
+  throw new Error(`${description} must stay inside the workspace`)
+}
+
+function realWorkspace(cwd) {
+  return fs.realpathSync(cwd)
+}
+
+function validateTagName(tag, name = 'tag') {
+  if (!tag) throw new Error(`${name} is required`)
+  if (tag !== tag.trim()) throw new Error(`${name} must not have leading or trailing whitespace`)
+  if (/[\x00-\x20\x7f]/.test(tag)) throw new Error(`${name} must not contain whitespace or control characters`)
+  if (tag.startsWith('-')) throw new Error(`${name} must not start with -`)
+  if (tag.startsWith('/') || tag.endsWith('/') || tag.includes('//')) throw new Error(`${name} must be a valid tag name`)
+  if (tag.includes('..')) throw new Error(`${name} must not contain ..`)
+  if (tag.includes('@{') || tag === '@') throw new Error(`${name} must be a valid tag name`)
+  if (/[~^:?*[\]\\{}]/.test(tag)) throw new Error(`${name} contains characters that are not allowed in git tags`)
+  if (tag.endsWith('.') || tag.endsWith('.lock')) throw new Error(`${name} must be a valid tag name`)
+  for (const part of tag.split('/')) {
+    if (!part || part.startsWith('.') || part.endsWith('.lock')) {
+      throw new Error(`${name} must be a valid tag name`)
+    }
+  }
+  return tag
+}
+
+function validateOptionalTagName(tag, name) {
+  if (!tag) return ''
+  return validateTagName(tag, name)
 }
 
 function globToRegExp(pattern) {
@@ -61,6 +133,7 @@ function walk(dir) {
 }
 
 function expandGlob(pattern, cwd = process.cwd()) {
+  if (path.isAbsolute(pattern)) throw new Error(`asset pattern ${pattern} must be relative to the workspace`)
   const normalized = pattern.split(path.sep).join('/')
   const segments = normalized.split('/')
   const firstGlob = segments.findIndex((segment) => hasGlobMeta(segment))
@@ -70,6 +143,8 @@ function expandGlob(pattern, cwd = process.cwd()) {
 
   if (!fs.existsSync(absoluteBase)) return []
 
+  assertInsideWorkspace(realWorkspace(cwd), fs.realpathSync(absoluteBase), `asset pattern ${pattern}`)
+
   const re = globToRegExp(normalized)
   return walk(absoluteBase)
     .map((file) => path.relative(cwd, file).split(path.sep).join('/'))
@@ -77,19 +152,39 @@ function expandGlob(pattern, cwd = process.cwd()) {
     .sort()
 }
 
+function validateAssetPath(entry, cwd = process.cwd()) {
+  if (path.isAbsolute(entry)) throw new Error(`asset ${entry} must be relative to the workspace`)
+
+  const workspace = realWorkspace(cwd)
+  const absolute = path.resolve(cwd, entry)
+  let realAsset
+  try {
+    realAsset = fs.realpathSync(absolute)
+  } catch (err) {
+    throw new Error(`asset ${entry} does not exist`, { cause: err })
+  }
+
+  assertInsideWorkspace(workspace, realAsset, `asset ${entry}`)
+
+  const stat = fs.statSync(realAsset)
+  if (!stat.isFile()) throw new Error(`asset ${entry} must be a regular file`)
+
+  return path.relative(cwd, absolute).split(path.sep).join('/')
+}
+
 function resolveAssets(entries, cwd = process.cwd()) {
   const assets = []
   for (const entry of entries) {
     if (!hasGlobMeta(entry)) {
-      assets.push(entry)
+      assets.push(validateAssetPath(entry, cwd))
       continue
     }
 
     const matches = expandGlob(entry, cwd)
     if (matches.length === 0) {
-      process.stdout.write(`::warning title=Dispatch::asset pattern matched no files: ${entry}\n`)
+      writeWarning(`asset pattern matched no files: ${entry}`)
     }
-    assets.push(...matches)
+    assets.push(...matches.map((match) => validateAssetPath(match, cwd)))
   }
   return [...new Set(assets)]
 }
@@ -108,16 +203,22 @@ function checkReleaseAuth(exec) {
   exec('gh', ['auth', 'status'])
 }
 
-function tagExists(exec, tag) {
-  const result = exec('git', ['ls-remote', '--tags', 'origin', tag], { allowFailure: true })
+function remoteTagObjectId(exec, tag) {
+  validateTagName(tag)
+  const result = exec('git', ['ls-remote', '--tags', '--refs', 'origin', `refs/tags/${tag}`], { allowFailure: true })
   if (result.status !== 0) throw new Error(`could not check remote tag ${tag}: ${result.stderr || result.stdout}`)
-  return result.stdout.trim() !== ''
+  return result.stdout.trim().split(/\s+/)[0] || ''
+}
+
+function tagExists(exec, tag) {
+  return remoteTagObjectId(exec, tag) !== ''
 }
 
 function createTag(exec, tag) {
+  validateTagName(tag)
   exec('git', ['tag', '-a', tag, '-m', `Release ${tag}`])
   try {
-    exec('git', ['push', 'origin', tag])
+    exec('git', ['push', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
   } catch (err) {
     exec('git', ['tag', '-d', tag], { allowFailure: true })
     throw err
@@ -125,6 +226,7 @@ function createTag(exec, tag) {
 }
 
 function fetchTag(exec, tag) {
+  validateTagName(tag)
   exec('git', ['fetch', '--force', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
 }
 
@@ -136,6 +238,7 @@ function isMissingReleaseError(output) {
 }
 
 function releaseView(exec, tag) {
+  validateTagName(tag)
   const result = exec('gh', ['release', 'view', tag, '--json', 'url,isDraft'], { allowFailure: true })
   if (result.status !== 0) {
     const output = result.stderr || result.stdout
@@ -154,14 +257,24 @@ function releaseView(exec, tag) {
 // Assets are passed to `gh release create` directly so GitHub CLI can create a draft, upload assets, and publish it.
 // With release immutability on, a separate upload after publishing fails because assets can no longer be modified.
 function createRelease(exec, tag, assets = []) {
-  const result = exec('gh', ['release', 'create', tag, ...assets, '--generate-notes', '--verify-tag'])
+  validateTagName(tag)
+  const assetArgs = assets.length > 0 ? ['--', ...assets] : []
+  const result = exec('gh', ['release', 'create', tag, '--generate-notes', '--verify-tag', ...assetArgs])
   return result.stdout.trim()
 }
 
 function updateFloatingTag(exec, floatingTag, releaseTag) {
   if (!floatingTag) return false
+  validateTagName(floatingTag)
+  validateTagName(releaseTag)
+  const expected = remoteTagObjectId(exec, floatingTag)
   exec('git', ['tag', '-fa', floatingTag, `${releaseTag}^{}`, '-m', `Floating tag for ${releaseTag}`])
-  exec('git', ['push', 'origin', floatingTag, '--force'])
+  exec('git', [
+    'push',
+    'origin',
+    `refs/tags/${floatingTag}:refs/tags/${floatingTag}`,
+    `--force-with-lease=refs/tags/${floatingTag}:${expected}`,
+  ])
   return true
 }
 
@@ -182,13 +295,13 @@ function floatingTagValue(tag, updated) {
 }
 
 function buildStepSummary(inputs, result) {
-  const releaseUrl = result.releaseUrl ? `[${tableValue(result.releaseUrl)}](${result.releaseUrl})` : '-'
+  const releaseUrl = result.releaseUrl ? linkValue(result.releaseUrl) : '-'
   return renderSummaryTable([
-    ['Release tag', `\`${tableValue(inputs.releaseTag)}\``],
+    ['Release tag', codeValue(inputs.releaseTag)],
     ['Tag', statusValue(result.tagCreated)],
     ['GitHub Release', statusValue(result.releaseCreated, inputs.createRelease)],
     ['Release URL', releaseUrl],
-    ['Assets uploaded', `\`${result.assetsUploaded}\``],
+    ['Assets uploaded', codeValue(result.assetsUploaded)],
     ['Major floating tag', floatingTagValue(inputs.majorTag, result.majorTagUpdated)],
     ['Minor floating tag', floatingTagValue(inputs.minorTag, result.minorTagUpdated)],
   ])
@@ -197,13 +310,16 @@ function buildStepSummary(inputs, result) {
 function buildFailureSummary(error, inputs = {}) {
   return renderSummaryTable([
     ['Status', 'failed'],
-    ['Release tag', inputs.releaseTag ? `\`${tableValue(inputs.releaseTag)}\`` : '-'],
+    ['Release tag', inputs.releaseTag ? codeValue(inputs.releaseTag) : '-'],
     ['Error', tableValue(error.message)],
   ])
 }
 
 function runRelease(inputs, exec, cwd = process.cwd()) {
   if (!inputs.releaseTag) throw new Error('release-tag is required')
+  validateTagName(inputs.releaseTag, 'release-tag')
+  validateOptionalTagName(inputs.majorTag, 'major-tag')
+  validateOptionalTagName(inputs.minorTag, 'minor-tag')
 
   configureGitUser(exec, inputs.gitUserName, inputs.gitUserEmail)
   if (inputs.signingKey) setupSigning(exec, inputs.signingKey)
@@ -240,9 +356,7 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
       assetsUploaded = assets.length
     }
   } else if (inputs.assets.length > 0) {
-    process.stdout.write(
-      `::warning title=Dispatch::assets specified but create-release is false; assets will not be uploaded\n`,
-    )
+    writeWarning('assets specified but create-release is false; assets will not be uploaded')
   }
 
   const majorTagUpdated = updateFloatingTag(exec, inputs.majorTag, inputs.releaseTag)
@@ -264,15 +378,19 @@ module.exports = {
   checkReleaseAuth,
   createRelease,
   createTag,
+  escapeWorkflowCommand,
   expandGlob,
   fetchTag,
   isMissingReleaseError,
   parseAssets,
   parseBool,
   releaseView,
+  remoteTagObjectId,
   resolveAssets,
   runRelease,
   setupSigning,
   tagExists,
   updateFloatingTag,
+  validateAssetPath,
+  validateTagName,
 }

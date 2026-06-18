@@ -37,6 +37,9 @@ steps:
 
 Glob patterns are supported: `dist/*.tar.gz`.
 
+Assets must be existing regular files inside the checked-out workspace. Absolute paths, parent-directory traversal, and
+symlinks that resolve outside the workspace are rejected before the GitHub Release is created.
+
 ### Tag Only (GoReleaser Owns the Release)
 
 ```yaml
