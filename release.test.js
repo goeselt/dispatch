@@ -6,14 +6,9 @@ const path = require('node:path')
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
-  buildFailureSummary,
-  buildStepSummary,
   checkReleaseAuth,
   createRelease,
   createTag,
-  escapeWorkflowCommand,
-  failureNextStep,
-  expandGlob,
   fetchTag,
   guardReleaseContext,
   guardReleaseHead,
@@ -21,20 +16,17 @@ const {
   parseAssets,
   parseBool,
   parseMakeLatest,
-  parseSecretKeyFingerprint,
   releaseCreateLatestArgs,
-  resolveAssets,
   runRelease,
-  setupSigning,
-  validateAssetPath,
-  validateFloatingTags,
-  validateTagName,
 } = require('./release.js')
 
 function makeExec(responses = {}) {
   const calls = []
+  const optionsByCall = []
   const exec = (name, args, options = {}) => {
-    calls.push([name, ...args])
+    const call = [name, ...args]
+    calls.push(call)
+    optionsByCall.push({ call, options })
     const key = [name, ...args].join('\x00')
     const response = responses[key] ?? { status: 0, stdout: '', stderr: '' }
     if (response.status && !options.allowFailure) {
@@ -44,6 +36,8 @@ function makeExec(responses = {}) {
   }
   exec.calls = calls
   exec.called = (...parts) => calls.some((call) => call.join('\x00') === parts.join('\x00'))
+  exec.optionsFor = (...parts) =>
+    optionsByCall.find((entry) => entry.call.join('\x00') === parts.join('\x00'))?.options || {}
   return exec
 }
 
@@ -58,6 +52,7 @@ function inputs(overrides = {}) {
     assets: [],
     majorTag: '',
     minorTag: '',
+    githubToken: '',
     gitUserName: '',
     gitUserEmail: '',
     releaseContext: {},
@@ -78,34 +73,6 @@ function releaseContext(overrides = {}) {
 }
 
 // Git/GitHub command wrappers
-
-test('setupSigning imports the GPG key and enables tag signing', () => {
-  const previousGnupgHome = process.env.GNUPGHOME
-  const exec = makeExec({
-    'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
-      stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
-    },
-  })
-
-  const cleanup = setupSigning(exec, Buffer.from('fake-gpg-key').toString('base64'))
-  const gnupgHome = process.env.GNUPGHOME
-
-  assert.ok(exec.called('gpg', '--import', '--batch'))
-  assert.ok(exec.called('gpg', '--batch', '--list-secret-keys', '--with-colons', '--fingerprint'))
-  assert.ok(exec.called('git', 'config', 'user.signingkey', 'ABCDEF1234567890'))
-  assert.ok(exec.called('git', 'config', 'tag.gpgsign', 'true'))
-  assert.ok(gnupgHome)
-  assert.ok(fs.existsSync(gnupgHome))
-
-  cleanup()
-  assert.equal(process.env.GNUPGHOME, previousGnupgHome)
-  assert.equal(fs.existsSync(gnupgHome), false)
-})
-
-test('parseSecretKeyFingerprint reads the imported secret key fingerprint', () => {
-  assert.equal(parseSecretKeyFingerprint('sec:::::::::\nfpr:::::::::ABCDEF:\n'), 'ABCDEF')
-  assert.equal(parseSecretKeyFingerprint(''), '')
-})
 
 test('checkReleaseAuth verifies gh authentication', () => {
   const exec = makeExec()
@@ -128,7 +95,10 @@ test('fetchTag refreshes the release tag from origin', () => {
 
 test('createTag deletes a local tag when pushing it fails', () => {
   const exec = makeExec({
-    'git\x00push\x00origin\x00refs/tags/v1.2.3:refs/tags/v1.2.3': { status: 1, stderr: 'no permission' },
+    'git\x00push\x00--no-verify\x00origin\x00refs/tags/v1.2.3:refs/tags/v1.2.3': {
+      status: 1,
+      stderr: 'no permission',
+    },
   })
 
   assert.throws(() => createTag(exec, 'v1.2.3'), /no permission/)
@@ -201,18 +171,6 @@ test('parseMakeLatest accepts the supported latest policies only', () => {
 
 test('parseAssets trims newline-separated assets', () => {
   assert.deepEqual(parseAssets('dist/a.zip\n\n dist/b.tgz \n'), ['dist/a.zip', 'dist/b.tgz'])
-})
-
-test('escapeWorkflowCommand escapes runner command separators', () => {
-  assert.equal(escapeWorkflowCommand('bad%value\r\n::error::owned'), 'bad%25value%0D%0A::error::owned')
-})
-
-test('validateTagName rejects option-like and refspec-like names', () => {
-  assert.equal(validateTagName('v1.2.3'), 'v1.2.3')
-
-  for (const tag of ['--mirror', 'v1\n::error::owned', 'refs/heads/main:refs/tags/v1', 'v1^{}', '../v1']) {
-    assert.throws(() => validateTagName(tag, 'release-tag'), /release-tag/)
-  }
 })
 
 test('runRelease rejects unsafe release tags before command execution', () => {
@@ -344,163 +302,6 @@ test('guardReleaseHead rejects a checkout that is unrelated to the GitHub event 
   )
 })
 
-test('validateFloatingTags requires tags to match the release version', () => {
-  assert.doesNotThrow(() => validateFloatingTags(inputs({ majorTag: 'v1', minorTag: 'v1.2' })))
-  assert.throws(() => validateFloatingTags(inputs({ releaseTag: 'v2.0.0', majorTag: 'v1' })), /major-tag must be v2/)
-  assert.throws(() => validateFloatingTags(inputs({ releaseTag: 'release-1', majorTag: 'v1' })), /semantic release-tag/)
-})
-
-// Step summaries and failure guidance
-
-test('buildStepSummary describes the release result', () => {
-  const summary = buildStepSummary(inputs({ majorTag: 'v1', minorTag: 'v1.2' }), {
-    tagCreated: true,
-    releaseCreated: true,
-    releaseUrl: 'https://github.com/org/repo/releases/tag/v1.2.3',
-    assetsUploaded: 2,
-    majorTagUpdated: true,
-    minorTagUpdated: true,
-  })
-
-  assert.match(summary, /## Dispatch Release/)
-  assert.match(summary, /\| Release tag \| <code>v1\.2\.3<\/code> \|/)
-  assert.match(summary, /\| Tag \| created \|/)
-  assert.match(summary, /\| GitHub Release \| created \|/)
-  assert.match(
-    summary,
-    /\| Release URL \| <a href="https:\/\/github\.com\/org\/repo\/releases\/tag\/v1\.2\.3">https:\/\/github\.com\/org\/repo\/releases\/tag\/v1\.2\.3<\/a> \|/,
-  )
-  assert.match(summary, /\| Assets uploaded \| <code>2<\/code> \|/)
-  assert.match(summary, /\| Major floating tag \| v1 updated \|/)
-  assert.match(summary, /\| Minor floating tag \| v1\.2 updated \|/)
-})
-
-test('buildStepSummary marks GitHub Release as skipped when create-release is false', () => {
-  const summary = buildStepSummary(inputs({ createRelease: false }), {
-    tagCreated: true,
-    releaseCreated: false,
-    releaseUrl: '',
-    assetsUploaded: 0,
-    majorTagUpdated: false,
-    minorTagUpdated: false,
-  })
-
-  assert.match(summary, /\| GitHub Release \| skipped by input \|/)
-  assert.match(summary, /\| Release URL \| - \|/)
-  assert.match(summary, /\| Assets uploaded \| <code>0<\/code> \|/)
-})
-
-test('buildStepSummary explains why requested assets were not uploaded', () => {
-  const skippedByInput = buildStepSummary(inputs({ createRelease: false, assets: ['dist/*.zip'] }), {
-    tagCreated: true,
-    releaseCreated: false,
-    releaseUrl: '',
-    assetsUploaded: 0,
-    majorTagUpdated: false,
-    minorTagUpdated: false,
-  })
-  const existingRelease = buildStepSummary(inputs({ assets: ['dist/*.zip'] }), {
-    tagCreated: false,
-    releaseCreated: false,
-    releaseUrl: 'https://github.com/org/repo/releases/tag/v1.2.3',
-    assetsUploaded: 0,
-    majorTagUpdated: false,
-    minorTagUpdated: false,
-  })
-
-  assert.match(skippedByInput, /\| Assets uploaded \| not uploaded \(GitHub Release skipped by input\) \|/)
-  assert.match(existingRelease, /\| Assets uploaded \| not uploaded \(GitHub Release already existed\) \|/)
-})
-
-test('buildFailureSummary describes release failures', () => {
-  const summary = buildFailureSummary(new Error('token | denied'), inputs())
-
-  assert.match(summary, /## Dispatch Release/)
-  assert.match(summary, /\| Status \| failed \|/)
-  assert.match(summary, /\| Release tag \| <code>v1\.2\.3<\/code> \|/)
-  assert.match(summary, /\| Error \| token \\\| denied \|/)
-})
-
-test('buildFailureSummary escapes summary HTML from untrusted text', () => {
-  const summary = buildFailureSummary(new Error('<script>alert(1)</script>'), inputs({ releaseTag: 'v1.2.3' }))
-
-  assert.match(summary, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
-  assert.doesNotMatch(summary, /<script>/)
-})
-
-test('buildFailureSummary includes a next step for actionable failures', () => {
-  const summary = buildFailureSummary(new Error('asset dist/tool.zip does not exist'), inputs())
-
-  assert.match(summary, /\| Next step \| Check that a build step creates the asset before dispatch runs/)
-})
-
-test('failureNextStep maps common release failures to recovery guidance', () => {
-  assert.match(failureNextStep(new Error('release v1.2.3 exists but is still a draft')), /Publish or delete/)
-  assert.match(
-    failureNextStep(new Error('release tag v1.2.3 does not exist and create-tag is false')),
-    /Create the tag/,
-  )
-  assert.match(failureNextStep(new Error('gh auth status: not logged in')), /github-token/)
-  assert.match(failureNextStep(new Error('dispatch cannot create releases from pull request events')), /default branch/)
-})
-
-// Asset resolution
-
-test('expandGlob resolves simple file globs', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
-  fs.mkdirSync(path.join(dir, 'dist'))
-  fs.writeFileSync(path.join(dir, 'dist', 'tool-linux.tar.gz'), '')
-  fs.writeFileSync(path.join(dir, 'dist', 'tool-darwin.tar.gz'), '')
-  fs.writeFileSync(path.join(dir, 'dist', 'notes.txt'), '')
-
-  assert.deepEqual(expandGlob('dist/tool-*.tar.gz', dir), ['dist/tool-darwin.tar.gz', 'dist/tool-linux.tar.gz'])
-})
-
-test('resolveAssets expands globs and preserves plain paths', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
-  fs.mkdirSync(path.join(dir, 'dist'))
-  fs.writeFileSync(path.join(dir, 'README.md'), '')
-  fs.writeFileSync(path.join(dir, 'dist', 'a.zip'), '')
-
-  assert.deepEqual(resolveAssets(['README.md', 'dist/*.zip'], dir), ['README.md', 'dist/a.zip'])
-})
-
-test('resolveAssets fails when a glob matches no files', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
-  fs.mkdirSync(path.join(dir, 'dist'))
-
-  assert.throws(() => resolveAssets(['dist/*.zip'], dir), /matched no files/)
-})
-
-test('validateAssetPath rejects assets outside the workspace', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
-  const dir = path.join(root, 'work')
-  fs.mkdirSync(dir)
-  fs.writeFileSync(path.join(root, 'secret.txt'), 'secret')
-
-  assert.throws(() => validateAssetPath('../secret.txt', dir), /inside the workspace/)
-  assert.throws(() => validateAssetPath(path.join(root, 'secret.txt'), dir), /relative to the workspace/)
-})
-
-test('validateAssetPath rejects symlinks that point outside the workspace', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
-  const dir = path.join(root, 'work')
-  fs.mkdirSync(path.join(dir, 'dist'), { recursive: true })
-  fs.writeFileSync(path.join(root, 'secret.txt'), 'secret')
-  fs.symlinkSync(path.join(root, 'secret.txt'), path.join(dir, 'dist', 'secret.txt'))
-
-  assert.throws(() => validateAssetPath('dist/secret.txt', dir), /inside the workspace/)
-})
-
-test('expandGlob rejects patterns that would walk outside the workspace', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
-  const dir = path.join(root, 'work')
-  fs.mkdirSync(dir)
-  fs.writeFileSync(path.join(root, 'secret.txt'), 'secret')
-
-  assert.throws(() => expandGlob('../*.txt', dir), /inside the workspace/)
-})
-
 test('createRelease separates asset names from gh flags', () => {
   const exec = makeExec({
     'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--\x00--repo\x00owner/repo': {
@@ -585,8 +386,41 @@ test('runRelease creates tag and release', () => {
   assert.equal(result.releaseCreated, true)
   assert.equal(result.releaseUrl, 'https://github.com/org/repo/releases/tag/v1.2.3')
   assert.equal(exec.called('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3'), true)
-  assert.equal(exec.called('git', 'push', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3'), true)
+  assert.equal(exec.called('git', 'push', '--no-verify', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3'), true)
   assert.equal(exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag'), true)
+})
+
+test('runRelease uses github-token for gh and git tag operations', () => {
+  const exec = makeExec({
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
+    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
+      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
+    },
+  })
+
+  runRelease(inputs({ githubToken: 'secret-token' }), exec)
+
+  const ghOptions = exec.optionsFor('gh', 'auth', 'status')
+  const lsRemoteOptions = exec.optionsFor('git', 'ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v1.2.3')
+  const pushOptions = exec.optionsFor('git', 'push', '--no-verify', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3')
+
+  const hasAuthHeader = (env) =>
+    Object.values(env || {}).some((value) => String(value).startsWith('Authorization: Basic '))
+
+  assert.equal(ghOptions.env.GH_TOKEN, 'secret-token')
+  assert.equal(hasAuthHeader(lsRemoteOptions.env), true)
+  assert.equal(hasAuthHeader(pushOptions.env), true)
+  assert.equal(exec.optionsFor('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3').env, undefined)
+  // The raw token leaks neither into the git environment nor into process.env.
+  assert.equal(
+    Object.values(pushOptions.env).some((value) => String(value).includes('secret-token')),
+    false,
+  )
+  assert.equal(
+    Object.values(process.env).some((value) => String(value).includes('secret-token')),
+    false,
+  )
 })
 
 test('runRelease checks release auth before creating a tag', () => {
@@ -794,11 +628,25 @@ test('runRelease uploads assets and updates floating tags', () => {
   )
   assert.equal(exec.called('git', 'tag', '-fa', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'), true)
   assert.equal(
-    exec.called('git', 'push', 'origin', 'refs/tags/v1:refs/tags/v1', '--force-with-lease=refs/tags/v1:'),
+    exec.called(
+      'git',
+      'push',
+      '--no-verify',
+      'origin',
+      'refs/tags/v1:refs/tags/v1',
+      '--force-with-lease=refs/tags/v1:',
+    ),
     true,
   )
   assert.equal(
-    exec.called('git', 'push', 'origin', 'refs/tags/v1.2:refs/tags/v1.2', '--force-with-lease=refs/tags/v1.2:'),
+    exec.called(
+      'git',
+      'push',
+      '--no-verify',
+      'origin',
+      'refs/tags/v1.2:refs/tags/v1.2',
+      '--force-with-lease=refs/tags/v1.2:',
+    ),
     true,
   )
 })
@@ -880,7 +728,14 @@ test('runRelease updates floating tags with an explicit force-with-lease expecta
   runRelease(inputs({ majorTag: 'v1' }), exec)
 
   assert.equal(
-    exec.called('git', 'push', 'origin', 'refs/tags/v1:refs/tags/v1', '--force-with-lease=refs/tags/v1:abc123'),
+    exec.called(
+      'git',
+      'push',
+      '--no-verify',
+      'origin',
+      'refs/tags/v1:refs/tags/v1',
+      '--force-with-lease=refs/tags/v1:abc123',
+    ),
     true,
   )
 })

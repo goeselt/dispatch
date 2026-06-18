@@ -44,7 +44,7 @@ inputs:
     required: false
     default: ''
   github-token:
-    description: 'GitHub token. Defaults to github.token.'
+    description: 'GitHub token used for git tag fetch/push operations. Defaults to github.token.'
     required: false
     default: ${{ github.token }}
   git-user-name:
