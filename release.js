@@ -3,6 +3,9 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
+const TAG_HELP = 'Use a simple tag such as v1.2.3, v1, or v1.2.'
+const ASSET_HELP = 'Use a path to an existing regular file under the checked-out workspace.'
+
 function parseBool(value, name) {
   const normalized = String(value ?? '')
     .trim()
@@ -31,7 +34,7 @@ function writeWarning(message) {
 }
 
 function tableValue(value) {
-  const text = String(value || '-')
+  const text = value === undefined || value === null || value === '' ? '-' : String(value)
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -64,8 +67,18 @@ function linkValue(value) {
 }
 
 function statusValue(done, active = true) {
-  if (!active) return 'skipped'
+  if (!active) return 'skipped by input'
   return done ? 'created' : 'reused'
+}
+
+function assetsValue(inputs, result) {
+  if (result.assetsUploaded > 0) return codeValue(result.assetsUploaded)
+
+  const requestedAssets = Array.isArray(inputs.assets) && inputs.assets.length > 0
+  if (!requestedAssets) return codeValue(0)
+  if (!inputs.createRelease) return 'not uploaded (GitHub Release skipped by input)'
+  if (!result.releaseCreated) return 'not uploaded (GitHub Release already existed)'
+  return codeValue(0)
 }
 
 function hasGlobMeta(pattern) {
@@ -75,7 +88,7 @@ function hasGlobMeta(pattern) {
 function assertInsideWorkspace(workspace, target, description) {
   const relative = path.relative(workspace, target)
   if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return
-  throw new Error(`${description} must stay inside the workspace`)
+  throw new Error(`${description} must stay inside the workspace. ${ASSET_HELP}`)
 }
 
 function realWorkspace(cwd) {
@@ -84,17 +97,23 @@ function realWorkspace(cwd) {
 
 function validateTagName(tag, name = 'tag') {
   if (!tag) throw new Error(`${name} is required`)
-  if (tag !== tag.trim()) throw new Error(`${name} must not have leading or trailing whitespace`)
-  if (/[\x00-\x20\x7f]/.test(tag)) throw new Error(`${name} must not contain whitespace or control characters`)
-  if (tag.startsWith('-')) throw new Error(`${name} must not start with -`)
-  if (tag.startsWith('/') || tag.endsWith('/') || tag.includes('//')) throw new Error(`${name} must be a valid tag name`)
-  if (tag.includes('..')) throw new Error(`${name} must not contain ..`)
-  if (tag.includes('@{') || tag === '@') throw new Error(`${name} must be a valid tag name`)
-  if (/[~^:?*[\]\\{}]/.test(tag)) throw new Error(`${name} contains characters that are not allowed in git tags`)
-  if (tag.endsWith('.') || tag.endsWith('.lock')) throw new Error(`${name} must be a valid tag name`)
+  if (tag !== tag.trim()) throw new Error(`${name} must not have leading or trailing whitespace. ${TAG_HELP}`)
+  if (/[\x00-\x20\x7f]/.test(tag)) {
+    throw new Error(`${name} must not contain whitespace or control characters. ${TAG_HELP}`)
+  }
+  if (tag.startsWith('-')) throw new Error(`${name} must not start with -. ${TAG_HELP}`)
+  if (tag.startsWith('/') || tag.endsWith('/') || tag.includes('//')) {
+    throw new Error(`${name} must be a valid tag name. ${TAG_HELP}`)
+  }
+  if (tag.includes('..')) throw new Error(`${name} must not contain "..". ${TAG_HELP}`)
+  if (tag.includes('@{') || tag === '@') throw new Error(`${name} must be a valid tag name. ${TAG_HELP}`)
+  if (/[~^:?*[\]\\{}]/.test(tag)) {
+    throw new Error(`${name} contains characters that are not allowed in git tags. ${TAG_HELP}`)
+  }
+  if (tag.endsWith('.') || tag.endsWith('.lock')) throw new Error(`${name} must be a valid tag name. ${TAG_HELP}`)
   for (const part of tag.split('/')) {
     if (!part || part.startsWith('.') || part.endsWith('.lock')) {
-      throw new Error(`${name} must be a valid tag name`)
+      throw new Error(`${name} must be a valid tag name. ${TAG_HELP}`)
     }
   }
   return tag
@@ -133,7 +152,7 @@ function walk(dir) {
 }
 
 function expandGlob(pattern, cwd = process.cwd()) {
-  if (path.isAbsolute(pattern)) throw new Error(`asset pattern ${pattern} must be relative to the workspace`)
+  if (path.isAbsolute(pattern)) throw new Error(`asset pattern ${pattern} must be relative to the workspace. ${ASSET_HELP}`)
   const normalized = pattern.split(path.sep).join('/')
   const segments = normalized.split('/')
   const firstGlob = segments.findIndex((segment) => hasGlobMeta(segment))
@@ -153,7 +172,7 @@ function expandGlob(pattern, cwd = process.cwd()) {
 }
 
 function validateAssetPath(entry, cwd = process.cwd()) {
-  if (path.isAbsolute(entry)) throw new Error(`asset ${entry} must be relative to the workspace`)
+  if (path.isAbsolute(entry)) throw new Error(`asset ${entry} must be relative to the workspace. ${ASSET_HELP}`)
 
   const workspace = realWorkspace(cwd)
   const absolute = path.resolve(cwd, entry)
@@ -161,13 +180,16 @@ function validateAssetPath(entry, cwd = process.cwd()) {
   try {
     realAsset = fs.realpathSync(absolute)
   } catch (err) {
-    throw new Error(`asset ${entry} does not exist`, { cause: err })
+    throw new Error(
+      `asset ${entry} does not exist. Check that a build step creates it before dispatch runs and that the path is relative to the checkout root.`,
+      { cause: err },
+    )
   }
 
   assertInsideWorkspace(workspace, realAsset, `asset ${entry}`)
 
   const stat = fs.statSync(realAsset)
-  if (!stat.isFile()) throw new Error(`asset ${entry} must be a regular file`)
+  if (!stat.isFile()) throw new Error(`asset ${entry} must be a regular file. ${ASSET_HELP}`)
 
   return path.relative(cwd, absolute).split(path.sep).join('/')
 }
@@ -182,7 +204,7 @@ function resolveAssets(entries, cwd = process.cwd()) {
 
     const matches = expandGlob(entry, cwd)
     if (matches.length === 0) {
-      writeWarning(`asset pattern matched no files: ${entry}`)
+      writeWarning(`asset pattern matched no files: ${entry}. Check that a build step creates the files before dispatch runs.`)
     }
     assets.push(...matches.map((match) => validateAssetPath(match, cwd)))
   }
@@ -301,18 +323,49 @@ function buildStepSummary(inputs, result) {
     ['Tag', statusValue(result.tagCreated)],
     ['GitHub Release', statusValue(result.releaseCreated, inputs.createRelease)],
     ['Release URL', releaseUrl],
-    ['Assets uploaded', codeValue(result.assetsUploaded)],
+    ['Assets uploaded', assetsValue(inputs, result)],
     ['Major floating tag', floatingTagValue(inputs.majorTag, result.majorTagUpdated)],
     ['Minor floating tag', floatingTagValue(inputs.minorTag, result.minorTagUpdated)],
   ])
 }
 
+function failureNextStep(error) {
+  const message = String(error?.message || '')
+
+  if (/still a draft/i.test(message)) {
+    return 'Publish or delete the draft release, then rerun dispatch.'
+  }
+  if (/create-tag is false/i.test(message)) {
+    return 'Create the tag before running dispatch, or set create-tag to true.'
+  }
+  if (/asset .*does not exist/i.test(message)) {
+    return 'Check that a build step creates the asset before dispatch runs and that the path is relative to the checkout root.'
+  }
+  if (/asset .*workspace|asset .*regular file|asset pattern .*workspace/i.test(message)) {
+    return ASSET_HELP
+  }
+  if (/(release-tag|major-tag|minor-tag).*?(tag name|must not|not allowed|required)/i.test(message)) {
+    return TAG_HELP
+  }
+  if (/not logged in|bad credentials|could not check release|gh auth status/i.test(message)) {
+    return 'Check the github-token input and repository permissions, then rerun dispatch.'
+  }
+  if (/force-with-lease/i.test(message)) {
+    return 'Another run updated the floating tag first. Rerun dispatch after the newer release finishes.'
+  }
+
+  return ''
+}
+
 function buildFailureSummary(error, inputs = {}) {
-  return renderSummaryTable([
+  const rows = [
     ['Status', 'failed'],
     ['Release tag', inputs.releaseTag ? codeValue(inputs.releaseTag) : '-'],
     ['Error', tableValue(error.message)],
-  ])
+  ]
+  const nextStep = failureNextStep(error)
+  if (nextStep) rows.push(['Next step', tableValue(nextStep)])
+  return renderSummaryTable(rows)
 }
 
 function runRelease(inputs, exec, cwd = process.cwd()) {
@@ -349,6 +402,11 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
       }
       releaseUrl = existing.url
       process.stdout.write(`release ${inputs.releaseTag} already exists; reusing it\n`)
+      if (inputs.assets.length > 0) {
+        writeWarning(
+          `assets were specified, but release ${inputs.releaseTag} already exists; existing releases are reused without uploading assets.`,
+        )
+      }
     } else {
       const assets = resolveAssets(inputs.assets, cwd)
       releaseUrl = createRelease(exec, inputs.releaseTag, assets)
@@ -379,6 +437,7 @@ module.exports = {
   createRelease,
   createTag,
   escapeWorkflowCommand,
+  failureNextStep,
   expandGlob,
   fetchTag,
   isMissingReleaseError,

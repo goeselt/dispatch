@@ -21,6 +21,18 @@ steps:
 
 ## Usage Examples
 
+### Standalone Release
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+
+- uses: goeselt/dispatch@v1
+  with:
+    release-tag: v1.2.3
+```
+
 ### Release With Binary Assets
 
 ```yaml
@@ -39,6 +51,9 @@ Glob patterns are supported: `dist/*.tar.gz`.
 
 Assets must be existing regular files inside the checked-out workspace. Absolute paths, parent-directory traversal, and
 symlinks that resolve outside the workspace are rejected before the GitHub Release is created.
+
+If an asset path fails, check that the build step runs before dispatch, writes into the checkout workspace, and uses the
+same relative path listed in `assets`.
 
 ### Tag Only (GoReleaser Owns the Release)
 
@@ -119,6 +134,9 @@ only when the current run just produced a fresh version bump. A retry-safe flow 
 - existing draft release: dispatch stops and asks you to delete or publish it before rerunning.
 
 ## Inputs
+
+Tag inputs accept simple Git tag names such as `v1.2.3`, `v1`, and `v1.2`. For safety, tag names cannot contain
+whitespace, control characters, refspec syntax, `..`, or option-like values beginning with `-`.
 
 | Input            | Default | Description                                                                                     |
 | ---------------- | ------- | ----------------------------------------------------------------------------------------------- |

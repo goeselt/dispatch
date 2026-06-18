@@ -9,7 +9,7 @@ branding:
 
 inputs:
   release-tag:
-    description: 'Release tag name, for example v1.2.3.'
+    description: 'Release tag name, for example v1.2.3. Must be a simple tag name, not a refspec or option.'
     required: true
   create-tag:
     description: 'Create and push the release tag when it does not already exist.'
@@ -24,7 +24,7 @@ inputs:
     required: false
     default: ''
   assets:
-    description: 'Newline-separated list of asset files or glob patterns to upload.'
+    description: 'Newline-separated list of existing workspace files or glob patterns to upload.'
     required: false
     default: ''
   major-tag:

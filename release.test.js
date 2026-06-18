@@ -12,6 +12,7 @@ const {
   createRelease,
   createTag,
   escapeWorkflowCommand,
+  failureNextStep,
   expandGlob,
   fetchTag,
   isMissingReleaseError,
@@ -185,8 +186,31 @@ test('buildStepSummary marks GitHub Release as skipped when create-release is fa
     minorTagUpdated: false,
   })
 
-  assert.match(summary, /\| GitHub Release \| skipped \|/)
+  assert.match(summary, /\| GitHub Release \| skipped by input \|/)
   assert.match(summary, /\| Release URL \| - \|/)
+  assert.match(summary, /\| Assets uploaded \| <code>0<\/code> \|/)
+})
+
+test('buildStepSummary explains why requested assets were not uploaded', () => {
+  const skippedByInput = buildStepSummary(inputs({ createRelease: false, assets: ['dist/*.zip'] }), {
+    tagCreated: true,
+    releaseCreated: false,
+    releaseUrl: '',
+    assetsUploaded: 0,
+    majorTagUpdated: false,
+    minorTagUpdated: false,
+  })
+  const existingRelease = buildStepSummary(inputs({ assets: ['dist/*.zip'] }), {
+    tagCreated: false,
+    releaseCreated: false,
+    releaseUrl: 'https://github.com/org/repo/releases/tag/v1.2.3',
+    assetsUploaded: 0,
+    majorTagUpdated: false,
+    minorTagUpdated: false,
+  })
+
+  assert.match(skippedByInput, /\| Assets uploaded \| not uploaded \(GitHub Release skipped by input\) \|/)
+  assert.match(existingRelease, /\| Assets uploaded \| not uploaded \(GitHub Release already existed\) \|/)
 })
 
 test('buildFailureSummary describes release failures', () => {
@@ -203,6 +227,18 @@ test('buildFailureSummary escapes summary HTML from untrusted text', () => {
 
   assert.match(summary, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
   assert.doesNotMatch(summary, /<script>/)
+})
+
+test('buildFailureSummary includes a next step for actionable failures', () => {
+  const summary = buildFailureSummary(new Error('asset dist/tool.zip does not exist'), inputs())
+
+  assert.match(summary, /\| Next step \| Check that a build step creates the asset before dispatch runs/)
+})
+
+test('failureNextStep maps common release failures to recovery guidance', () => {
+  assert.match(failureNextStep(new Error('release v1.2.3 exists but is still a draft')), /Publish or delete/)
+  assert.match(failureNextStep(new Error('release tag v1.2.3 does not exist and create-tag is false')), /Create the tag/)
+  assert.match(failureNextStep(new Error('gh auth status: not logged in')), /github-token/)
 })
 
 test('expandGlob resolves simple file globs', () => {
@@ -497,10 +533,23 @@ test('runRelease skips asset upload when release already exists', () => {
       stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
     },
   })
+  const written = []
+  const origWrite = process.stdout.write.bind(process.stdout)
+  process.stdout.write = (msg) => {
+    written.push(msg)
+    return true
+  }
 
-  const result = runRelease(inputs({ assets: ['dist/*.zip'] }), exec)
+  let result
+  try {
+    result = runRelease(inputs({ assets: ['dist/*.zip'] }), exec)
+  } finally {
+    process.stdout.write = origWrite
+  }
 
   assert.equal(result.assetsUploaded, 0)
+  assert.ok(written.some((line) => line.includes('release v1.2.3 already exists')))
+  assert.ok(written.some((line) => line.includes('existing releases are reused without uploading assets')))
   assert.equal(
     exec.calls.some((call) => call[0] === 'gh' && call[1] === 'release' && call[2] === 'upload'),
     false,
