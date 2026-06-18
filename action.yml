@@ -9,30 +9,38 @@ branding:
 
 inputs:
   release-tag:
-    description: 'Release tag name, for example v1.2.3.'
+    description: 'Release tag name, for example v1.2.3. Must be a simple tag name, not a refspec or option.'
     required: true
   create-tag:
     description: 'Create and push the release tag when it does not already exist.'
     required: false
     default: 'true'
   create-release:
-    description: 'Create the GitHub Release. Set false when another tool, such as GoReleaser, owns the release.'
+    description: 'Create the GitHub Release. Set false when another tool, such as GoReleaser, owns the release; floating tags are not updated in this mode.'
     required: false
     default: 'true'
+  allow-non-default-branch:
+    description: 'Allow releases from a non-default branch. Pull request events and tag refs are still blocked.'
+    required: false
+    default: 'false'
+  make-latest:
+    description: 'Controls the GitHub Latest marker: default-branch, auto, true, or false. default-branch prevents non-default branch releases from becoming Latest.'
+    required: false
+    default: 'default-branch'
   signing-key:
     description: 'Base64-encoded GPG private key. When set, all annotated tags created by this action are signed.'
     required: false
     default: ''
   assets:
-    description: 'Newline-separated list of asset files or glob patterns to upload.'
+    description: 'Newline-separated list of existing workspace files or glob patterns to upload. Every path must exist and every glob must match.'
     required: false
     default: ''
   major-tag:
-    description: 'Floating major tag to update, for example v1.'
+    description: 'Floating major tag to update, for example v1. Must match release-tag.'
     required: false
     default: ''
   minor-tag:
-    description: 'Floating minor tag to update, for example v1.2.'
+    description: 'Floating minor tag to update, for example v1.2. Must match release-tag.'
     required: false
     default: ''
   github-token:

@@ -1,8 +1,17 @@
 'use strict'
 
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
-const { buildFailureSummary, buildStepSummary, parseAssets, parseBool, runRelease } = require('./release.js')
+const {
+  buildFailureSummary,
+  buildStepSummary,
+  escapeWorkflowCommand,
+  parseAssets,
+  parseBool,
+  parseMakeLatest,
+  runRelease,
+} = require('./release.js')
 
 function input(name, fallback = '') {
   return process.env[`INPUT_${name.toUpperCase()}`] ?? fallback
@@ -11,13 +20,24 @@ function input(name, fallback = '') {
 function setOutput(name, value) {
   const outputFile = process.env['GITHUB_OUTPUT']
   if (!outputFile) return
-  fs.appendFileSync(outputFile, `${name}=${value}\n`)
+  const delimiter = `dispatch_${crypto.randomUUID()}`
+  fs.appendFileSync(outputFile, `${name}<<${delimiter}\n${value}\n${delimiter}\n`)
 }
 
 function appendStepSummary(markdown) {
   const summaryFile = process.env['GITHUB_STEP_SUMMARY']
   if (!summaryFile) return
   fs.appendFileSync(summaryFile, `${markdown}\n`)
+}
+
+function readDefaultBranch(eventPath) {
+  if (!eventPath) return ''
+  try {
+    const event = JSON.parse(fs.readFileSync(eventPath, 'utf8'))
+    return event?.repository?.default_branch || ''
+  } catch {
+    return ''
+  }
 }
 
 function exec(name, args, { allowFailure = false, input } = {}) {
@@ -47,12 +67,23 @@ try {
     releaseTag: input('RELEASE-TAG'),
     createTag: parseBool(input('CREATE-TAG', 'true'), 'create-tag'),
     createRelease: parseBool(input('CREATE-RELEASE', 'true'), 'create-release'),
+    allowNonDefaultBranch: parseBool(input('ALLOW-NON-DEFAULT-BRANCH', 'false'), 'allow-non-default-branch'),
+    makeLatest: parseMakeLatest(input('MAKE-LATEST', 'default-branch')),
     signingKey: input('SIGNING-KEY'),
     assets: parseAssets(input('ASSETS')),
     majorTag: input('MAJOR-TAG'),
     minorTag: input('MINOR-TAG'),
     gitUserName: input('GIT-USER-NAME', actor),
     gitUserEmail: input('GIT-USER-EMAIL', `${actor}@users.noreply.github.com`),
+    releaseContext: {
+      eventName: process.env['GITHUB_EVENT_NAME'] || '',
+      ref: process.env['GITHUB_REF'] || '',
+      refName: process.env['GITHUB_REF_NAME'] || '',
+      refType: process.env['GITHUB_REF_TYPE'] || '',
+      sha: process.env['GITHUB_SHA'] || '',
+      repository: process.env['GITHUB_REPOSITORY'] || '',
+      defaultBranch: readDefaultBranch(process.env['GITHUB_EVENT_PATH']),
+    },
   }
 
   const result = runRelease(inputs, exec)
@@ -69,6 +100,6 @@ try {
   )
 } catch (err) {
   appendStepSummary(buildFailureSummary(err, inputs))
-  process.stdout.write(`::error title=Dispatch::${err.message}\n`)
+  process.stdout.write(`::error title=Dispatch::${escapeWorkflowCommand(err.message)}\n`)
   process.exit(1)
 }

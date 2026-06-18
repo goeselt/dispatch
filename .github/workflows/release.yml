@@ -37,9 +37,26 @@ jobs:
 
       - id: intent
         name: Intent Release
-        uses: goeselt/intent@d168da88e1330163fb8943b119685d2af453fd8d # v1.0.2
+        uses: goeselt/intent@f6d867043c166cdbe5c9be0ee2fbee84f2065415 # v1.1.0
         with:
           initial-version: '1.0.0'
+          pr-comment: true
+
+      - name: Bump Version
+        if: steps.intent.outputs.release-needed == 'true'
+        env:
+          VERSION: ${{ steps.intent.outputs.next-version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Commit Version
+        if: steps.intent.outputs.release-needed == 'true'
+        uses: goeselt/scribe@b1f7a92ec86ef50d731050f59624a049854e031a # v1.1.1
+        with:
+          files: package.json
+          message: 'chore: release ${{ steps.intent.outputs.release-tag }}'
+          git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
+          git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}
+          signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
 
       - name: Release
         if: steps.intent.outputs.release-needed == 'true'
