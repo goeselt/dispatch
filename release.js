@@ -100,13 +100,14 @@ function guardReleaseHead(exec, inputs) {
   }
 
   const actual = exec('git', ['rev-parse', 'HEAD']).stdout.trim()
-  if (actual !== expected) {
-    throw new Error(
-      `dispatch is running on checked-out commit ${actual || '(unknown)'}, but the GitHub event points to ${expected}. Check the actions/checkout ref before releasing.`,
-    )
-  }
+  if (actual === expected) return actual
 
-  return expected
+  const ancestor = exec('git', ['merge-base', '--is-ancestor', expected, actual], { allowFailure: true })
+  if (ancestor.status === 0) return actual
+
+  throw new Error(
+    `dispatch is running on checked-out commit ${actual || '(unknown)'}, but the GitHub event points to ${expected} and is not an ancestor of HEAD. Check the actions/checkout ref before releasing.`,
+  )
 }
 
 // GitHub Actions command and summary formatting

@@ -180,9 +180,9 @@ events, pull request refs, and tag refs are blocked before any Git or GitHub rel
 Dispatch also requires the current branch to match the repository default branch from the GitHub event payload. This
 prevents accidental releases from feature branches, PR merge refs, detached checkouts, or old maintenance branches.
 
-The checked-out `HEAD` must also match `GITHUB_SHA`. If a workflow checks out a different ref before dispatch runs,
-dispatch stops before creating or reusing tags. When a concrete release tag already exists, dispatch verifies that the
-tag points to the same commit as the current release run before reusing it.
+The checked-out `HEAD` must be `GITHUB_SHA` or a descendant of it. This allows release workflows to commit generated
+version files before dispatch runs, while still blocking unrelated checkouts. When a concrete release tag already
+exists, dispatch verifies that the tag points to the same commit as the current release run before reusing it.
 
 If you intentionally release from a maintenance branch, or from a context where GitHub does not expose the default
 branch in the event payload, set `allow-non-default-branch: true`. This opt-out still does not allow pull request events
