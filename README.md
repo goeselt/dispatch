@@ -2,7 +2,7 @@
 
 GitHub Action that creates a release tag, creates a GitHub Release, uploads assets, and maintains floating major/minor
 tags. Designed as the publish step after [`goeselt/intent`](https://github.com/goeselt/intent) resolves the next
-semantic version. Use it as [`goeselt/dispatch`](https://github.com/goeselt/dispatch).
+semantic version.
 
 Use dispatch when release creation should be boring, retry-safe, and guarded: it fails early for doubtful GitHub Actions
 contexts, verifies reused tags, keeps floating tags consistent, and treats missing release assets as release blockers.
