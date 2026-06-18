@@ -297,14 +297,8 @@ test('guardReleaseHead returns the expected SHA when the checkout matches', () =
 
 test('validateFloatingTags requires tags to match the release version', () => {
   assert.doesNotThrow(() => validateFloatingTags(inputs({ majorTag: 'v1', minorTag: 'v1.2' })))
-  assert.throws(
-    () => validateFloatingTags(inputs({ releaseTag: 'v2.0.0', majorTag: 'v1' })),
-    /major-tag must be v2/,
-  )
-  assert.throws(
-    () => validateFloatingTags(inputs({ releaseTag: 'release-1', majorTag: 'v1' })),
-    /semantic release-tag/,
-  )
+  assert.throws(() => validateFloatingTags(inputs({ releaseTag: 'v2.0.0', majorTag: 'v1' })), /major-tag must be v2/)
+  assert.throws(() => validateFloatingTags(inputs({ releaseTag: 'release-1', majorTag: 'v1' })), /semantic release-tag/)
 })
 
 // Step summaries and failure guidance
@@ -393,7 +387,10 @@ test('buildFailureSummary includes a next step for actionable failures', () => {
 
 test('failureNextStep maps common release failures to recovery guidance', () => {
   assert.match(failureNextStep(new Error('release v1.2.3 exists but is still a draft')), /Publish or delete/)
-  assert.match(failureNextStep(new Error('release tag v1.2.3 does not exist and create-tag is false')), /Create the tag/)
+  assert.match(
+    failureNextStep(new Error('release tag v1.2.3 does not exist and create-tag is false')),
+    /Create the tag/,
+  )
   assert.match(failureNextStep(new Error('gh auth status: not logged in')), /github-token/)
   assert.match(failureNextStep(new Error('dispatch cannot create releases from pull request events')), /default branch/)
 })
@@ -711,7 +708,10 @@ test('runRelease uploads assets and updates floating tags', () => {
   assert.equal(result.assetsUploaded, 1)
   assert.equal(result.majorTagUpdated, true)
   assert.equal(result.minorTagUpdated, true)
-  assert.equal(exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--', 'dist/a.zip'), true)
+  assert.equal(
+    exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--', 'dist/a.zip'),
+    true,
+  )
   assert.equal(exec.called('git', 'tag', '-fa', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'), true)
   assert.equal(
     exec.called('git', 'push', 'origin', 'refs/tags/v1:refs/tags/v1', '--force-with-lease=refs/tags/v1:'),

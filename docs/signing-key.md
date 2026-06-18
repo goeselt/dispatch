@@ -1,8 +1,8 @@
 # Signing Key Setup
 
 Dispatch can sign the annotated Git tags it creates. Signed tags give consumers a stronger signal that a release tag was
-created by the expected release workflow and was not replaced by someone with tag push access. When `signing-key` is set,
-dispatch also verifies an existing release tag before reusing it, so reruns do not silently build on an unsigned or
+created by the expected release workflow and was not replaced by someone with tag push access. When `signing-key` is
+set, dispatch also verifies an existing release tag before reusing it, so reruns do not silently build on an unsigned or
 unexpected tag.
 
 Use a dedicated release signing key for CI. Do not reuse a personal developer key.
@@ -40,7 +40,7 @@ EOF
 gpg --batch --generate-key signing-key.batch
 ```
 
-Export the key id:
+Export the key ID:
 
 ```bash
 export KEY_ID="$(gpg --list-secret-keys --with-colons "${KEY_EMAIL}" | awk -F: '$1 == "sec" { print $5; exit }')"

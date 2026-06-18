@@ -84,7 +84,9 @@ function guardReleaseContext(inputs) {
 }
 
 function hasReleaseContext(context = {}) {
-  return Boolean(context.eventName || context.ref || context.refType || context.refName || context.defaultBranch || context.sha)
+  return Boolean(
+    context.eventName || context.ref || context.refType || context.refName || context.defaultBranch || context.sha,
+  )
 }
 
 function guardReleaseHead(exec, inputs) {
@@ -149,7 +151,9 @@ function linkValue(value) {
   } catch {
     return text
   }
-  return url.protocol === 'http:' || url.protocol === 'https:' ? `<a href="${attributeValue(url.href)}">${text}</a>` : text
+  return url.protocol === 'http:' || url.protocol === 'https:'
+    ? `<a href="${attributeValue(url.href)}">${text}</a>`
+    : text
 }
 
 function statusValue(done, active = true) {
@@ -169,10 +173,17 @@ function assetsValue(inputs, result) {
 
 // Tag validation
 
+function hasAsciiControlOrWhitespace(value) {
+  return [...value].some((ch) => {
+    const code = ch.charCodeAt(0)
+    return code <= 0x20 || code === 0x7f
+  })
+}
+
 function validateTagName(tag, name = 'tag') {
   if (!tag) throw new Error(`${name} is required`)
   if (tag !== tag.trim()) throw new Error(`${name} must not have leading or trailing whitespace. ${TAG_HELP}`)
-  if (/[\x00-\x20\x7f]/.test(tag)) {
+  if (hasAsciiControlOrWhitespace(tag)) {
     throw new Error(`${name} must not contain whitespace or control characters. ${TAG_HELP}`)
   }
   if (tag.startsWith('-')) throw new Error(`${name} must not start with -. ${TAG_HELP}`)
@@ -271,7 +282,8 @@ function walk(dir) {
 }
 
 function expandGlob(pattern, cwd = process.cwd()) {
-  if (path.isAbsolute(pattern)) throw new Error(`asset pattern ${pattern} must be relative to the workspace. ${ASSET_HELP}`)
+  if (path.isAbsolute(pattern))
+    throw new Error(`asset pattern ${pattern} must be relative to the workspace. ${ASSET_HELP}`)
   const normalized = pattern.split(path.sep).join('/')
   const segments = normalized.split('/')
   const firstGlob = segments.findIndex((segment) => hasGlobMeta(segment))
@@ -554,7 +566,9 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
   guardReleaseContext(inputs)
   validateFloatingTags(inputs)
   if (!inputs.createRelease && (inputs.majorTag || inputs.minorTag)) {
-    throw new Error('floating tags require create-release to be true; omit major-tag/minor-tag when another tool owns the release.')
+    throw new Error(
+      'floating tags require create-release to be true; omit major-tag/minor-tag when another tool owns the release.',
+    )
   }
   const expectedReleaseSha = guardReleaseHead(exec, inputs)
 

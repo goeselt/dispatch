@@ -5,17 +5,17 @@
 Pure Node.js standard library -- no runtime dependencies, no build step. `index.js` is committed as-is and referenced
 directly by `action.yml` (`runs.using: node24`).
 
-The project is intentionally small. Prefer keeping the release flow easy to read over adding abstractions that only
-save a few lines. A future maintainer should be able to understand the action by reading `index.js`, then the section
-headers in `release.js`.
+The project is intentionally small. Prefer keeping the release flow easy to read over adding abstractions that only save
+a few lines. A future maintainer should be able to understand the action by reading `index.js`, then the section headers
+in `release.js`.
 
-| File              | Responsibility                                                                 |
-| ----------------- | ------------------------------------------------------------------------------ |
-| `action.yml`      | Public GitHub Action metadata: inputs, outputs, runtime.                       |
-| `index.js`        | GitHub Actions adapter: input/env parsing, `GH_TOKEN` wiring, outputs.         |
-| `release.js`      | Testable release behavior: guards, validation, git/gh calls, summaries.        |
-| `release.test.js` | Unit tests with fake command execution; no network or real repository writes.  |
-| `README.md`       | User-facing examples, retry model, release guards, input reference.            |
+| File              | Responsibility                                                                |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `action.yml`      | Public GitHub Action metadata: inputs, outputs, runtime.                      |
+| `index.js`        | GitHub Actions adapter: input/env parsing, `GH_TOKEN` wiring, outputs.        |
+| `release.js`      | Testable release behavior: guards, validation, git/gh calls, summaries.       |
+| `release.test.js` | Unit tests with fake command execution; no network or real repository writes. |
+| `README.md`       | User-facing examples, retry model, release guards, input reference.           |
 
 The action runs inside a checkout that must have push credentials. For repositories where the default `GITHUB_TOKEN`
 cannot push tags, callers pass a GitHub App token via `github-token` and use it in the preceding `actions/checkout`
@@ -38,7 +38,7 @@ The action is retry-friendly but conservative:
 
 ## Guard Philosophy
 
-Release context guards should run before any git or GitHub command. The default policy is intentionally boring:
+Release context guards should run before any Git or GitHub command. The default policy is intentionally boring:
 
 - block pull request events and pull request refs
 - block tag refs
@@ -49,9 +49,9 @@ Release context guards should run before any git or GitHub command. The default 
 `allow-non-default-branch` is the escape hatch for intentional maintenance-branch releases or contexts where GitHub did
 not expose the default branch. It must not bypass pull request or tag-ref guards.
 
-Tag and asset validation are similarly defensive. Tags are restricted to simple release names, and assets must resolve to
-regular files inside the checked-out workspace. Keep these checks boring and explicit; release code is not the place for
-clever parsing.
+Tag and asset validation are similarly defensive. Tags are restricted to simple release names, and assets must resolve
+to regular files inside the checked-out workspace. Keep these checks boring and explicit; release code is not the place
+for clever parsing.
 
 When `signing-key` is set, existing concrete release tags must pass `git verify-tag` before they are reused. New release
 tags are signed through `git config tag.gpgsign true`.
@@ -65,7 +65,7 @@ tags are signed through `git config tag.gpgsign true`.
 - GitHub Actions command and summary formatting
 - tag validation
 - asset resolution
-- git and GitHub CLI operations
+- Git and GitHub CLI operations
 - step summary and failure guidance
 - release orchestration
 

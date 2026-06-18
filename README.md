@@ -61,8 +61,8 @@ Assets must be existing regular files inside the checked-out workspace. Absolute
 symlinks that resolve outside the workspace are rejected before the GitHub Release is created.
 
 Every asset entry is strict: a plain path must exist and every glob must match at least one file. Dispatch also fails
-when a published GitHub Release already exists and `assets` were requested, because immutable releases cannot be repaired
-by uploading missing assets later. Use a new `release-tag` for changed release artifacts.
+when a published GitHub Release already exists and `assets` were requested, because immutable releases cannot be
+repaired by uploading missing assets later. Use a new `release-tag` for changed release artifacts.
 
 If an asset path or glob fails, check that the build step runs before dispatch, writes into the checkout workspace, and
 uses the same relative path listed in `assets`.
@@ -84,8 +84,8 @@ steps:
       allow-non-default-branch: true
 ```
 
-By default, maintenance branch releases pass `--latest=false` to `gh release create`, so they do not accidentally replace
-the Latest marker for the main release line. Set `make-latest: auto` to use GitHub's default Latest calculation,
+By default, maintenance branch releases pass `--latest=false` to `gh release create`, so they do not accidentally
+replace the Latest marker for the main release line. Set `make-latest: auto` to use GitHub's default Latest calculation,
 `make-latest: true` to force Latest, or `make-latest: false` to disable Latest explicitly.
 
 ### Tag Only (GoReleaser Owns the Release)
@@ -102,8 +102,8 @@ the Latest marker for the main release line. Set `make-latest: auto` to use GitH
     args: release --clean
 ```
 
-When `create-release` is `false`, dispatch does not update floating tags. Let the release-owning tool finish first,
-then run dispatch with `create-release: true` if you want dispatch to refresh `major-tag` or `minor-tag`.
+When `create-release` is `false`, dispatch does not update floating tags. Let the release-owning tool finish first, then
+run dispatch with `create-release: true` if you want dispatch to refresh `major-tag` or `minor-tag`.
 
 ### Signed Tags
 
@@ -163,9 +163,10 @@ only when the current run just produced a fresh version bump. A retry-safe flow 
 
 - version bump committed, release tag missing: dispatch creates the tag and release.
 - release tag exists, GitHub Release missing: dispatch creates the release.
-- release tag and published GitHub Release exist without requested assets: dispatch reuses both and refreshes floating tags.
-- release tag and published GitHub Release exist with requested assets: dispatch stops, because assets cannot be repaired
-  safely for immutable releases.
+- release tag and published GitHub Release exist without requested assets: dispatch reuses both and refreshes floating
+  tags.
+- release tag and published GitHub Release exist with requested assets: dispatch stops, because assets cannot be
+  repaired safely for immutable releases.
 - existing draft release: dispatch stops and asks you to delete or publish it before rerunning.
 
 ## Release Context Guards
@@ -181,8 +182,8 @@ dispatch stops before creating or reusing tags. When a concrete release tag alre
 tag points to the same commit as the current release run before reusing it.
 
 If you intentionally release from a maintenance branch, or from a context where GitHub does not expose the default
-branch in the event payload, set `allow-non-default-branch: true`. This opt-out still does not allow pull request
-events or tag refs. With the default `make-latest: default-branch` policy, non-default branch releases are created with
+branch in the event payload, set `allow-non-default-branch: true`. This opt-out still does not allow pull request events
+or tag refs. With the default `make-latest: default-branch` policy, non-default branch releases are created with
 `--latest=false`.
 
 ## Inputs
@@ -193,20 +194,20 @@ whitespace, control characters, refspec syntax, `..`, or option-like values begi
 When provided, `major-tag` and `minor-tag` must match the semantic `release-tag`. For `v1.2.3`, the only matching
 floating tags are `v1` and `v1.2`.
 
-| Input            | Default | Description                                                                                     |
-| ---------------- | ------- | ----------------------------------------------------------------------------------------------- |
-| `release-tag`    |         | Release tag name, for example `v1.2.3`. **Required.**                                           |
-| `create-tag`     | `true`  | Create and push the release tag when it does not already exist.                                 |
-| `create-release` | `true`  | Create the GitHub Release.                                                                      |
-| `allow-non-default-branch` | `false` | Allow releases from a non-default branch. PR events and tag refs remain blocked.      |
-| `make-latest`    | `default-branch` | Controls GitHub's Latest marker: `default-branch`, `auto`, `true`, or `false`.       |
-| `signing-key`    |         | Base64-encoded GPG private key. When set, all annotated tags created by this action are signed. |
-| `assets`         |         | Newline-separated asset files or glob patterns to upload. Paths must exist; globs must match.   |
-| `major-tag`      |         | Floating major tag to update, e.g. `v1`.                                                        |
-| `minor-tag`      |         | Floating minor tag to update, e.g. `v1.2`.                                                      |
-| `github-token`   | token   | GitHub token used by `gh`.                                                                      |
-| `git-user-name`  | actor   | `git user.name` for annotated tags.                                                             |
-| `git-user-email` | actor   | `git user.email` for annotated tags.                                                            |
+| Input                      | Default          | Description                                                                                     |
+| -------------------------- | ---------------- | ----------------------------------------------------------------------------------------------- |
+| `release-tag`              |                  | Release tag name, for example `v1.2.3`. **Required.**                                           |
+| `create-tag`               | `true`           | Create and push the release tag when it does not already exist.                                 |
+| `create-release`           | `true`           | Create the GitHub Release.                                                                      |
+| `allow-non-default-branch` | `false`          | Allow releases from a non-default branch. PR events and tag refs remain blocked.                |
+| `make-latest`              | `default-branch` | Controls GitHub's Latest marker: `default-branch`, `auto`, `true`, or `false`.                  |
+| `signing-key`              |                  | Base64-encoded GPG private key. When set, all annotated tags created by this action are signed. |
+| `assets`                   |                  | Newline-separated asset files or glob patterns to upload. Paths must exist; globs must match.   |
+| `major-tag`                |                  | Floating major tag to update, e.g. `v1`.                                                        |
+| `minor-tag`                |                  | Floating minor tag to update, e.g. `v1.2`.                                                      |
+| `github-token`             | token            | GitHub token used by `gh`.                                                                      |
+| `git-user-name`            | actor            | `git user.name` for annotated tags.                                                             |
+| `git-user-email`           | actor            | `git user.email` for annotated tags.                                                            |
 
 ## Outputs
 
