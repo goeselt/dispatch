@@ -4,6 +4,9 @@ GitHub Action that creates a release tag, creates a GitHub Release, uploads asse
 tags. Designed as the publish step after [`goeselt/intent`](https://github.com/goeselt/intent) resolves the next
 semantic version. Use it as [`goeselt/dispatch`](https://github.com/goeselt/dispatch).
 
+Use dispatch when release creation should be boring, retry-safe, and guarded: it fails early for doubtful GitHub Actions
+contexts, verifies reused tags, keeps floating tags consistent, and treats missing release assets as release blockers.
+
 ## Quick Start
 
 ```yaml
@@ -107,6 +110,8 @@ then run dispatch with `create-release: true` if you want dispatch to refresh `m
 Pass a base64-encoded GPG private key to sign all annotated tags created by the action. Consumers can verify releases
 with `git verify-tag <tag>` after importing your public key.
 
+See [Signing Key Setup](docs/signing-key.md) for a straight-forward Debian-based setup guide.
+
 ```yaml
 - uses: goeselt/dispatch@v1
   with:
@@ -115,14 +120,6 @@ with `git verify-tag <tag>` after importing your public key.
     minor-tag: ${{ steps.version.outputs.minor-tag }}
     signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
 ```
-
-Export and store your private key as a repository secret:
-
-```bash
-gpg --export-secret-keys --armor <key-id> | base64 -w0
-```
-
-Publish the corresponding public key on a keyserver or in your repository so consumers can verify signatures.
 
 If `signing-key` is set and the concrete release tag already exists, dispatch verifies the existing tag with
 `git verify-tag` before reusing it.
