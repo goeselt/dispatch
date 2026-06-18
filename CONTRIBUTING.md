@@ -29,10 +29,12 @@ upload assets only when creating the release, and then refresh optional floating
 The action is retry-friendly but conservative:
 
 - Existing concrete tags are fetched and reused.
+- Reused concrete tags must point to the same commit as the current release run.
 - Existing published releases are reused.
 - Existing draft releases stop the run, because the intended state is ambiguous.
 - Assets are uploaded only while creating a new release. Existing releases are not modified.
 - Floating tags are pushed with `--force-with-lease` to avoid silently overwriting a concurrent update.
+- Floating tags are only updated when dispatch owns the GitHub Release creation for that run.
 
 ## Guard Philosophy
 
@@ -42,6 +44,7 @@ Release context guards should run before any git or GitHub command. The default 
 - block tag refs
 - allow branch refs only
 - require the current branch to be the repository default branch
+- require the checked-out `HEAD` to match `GITHUB_SHA`
 
 `allow-non-default-branch` is the escape hatch for intentional maintenance-branch releases or contexts where GitHub did
 not expose the default branch. It must not bypass pull request or tag-ref guards.
@@ -49,6 +52,9 @@ not expose the default branch. It must not bypass pull request or tag-ref guards
 Tag and asset validation are similarly defensive. Tags are restricted to simple release names, and assets must resolve to
 regular files inside the checked-out workspace. Keep these checks boring and explicit; release code is not the place for
 clever parsing.
+
+When `signing-key` is set, existing concrete release tags must pass `git verify-tag` before they are reused. New release
+tags are signed through `git config tag.gpgsign true`.
 
 ## Code Organization
 

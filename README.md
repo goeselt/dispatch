@@ -69,6 +69,9 @@ same relative path listed in `assets`.
     args: release --clean
 ```
 
+When `create-release` is `false`, dispatch does not update floating tags. Let the release-owning tool finish first,
+then run dispatch with `create-release: true` if you want dispatch to refresh `major-tag` or `minor-tag`.
+
 ### Signed Tags
 
 Pass a base64-encoded GPG private key to sign all annotated tags created by the action. Consumers can verify releases
@@ -90,6 +93,9 @@ gpg --export-secret-keys --armor <key-id> | base64 -w0
 ```
 
 Publish the corresponding public key on a keyserver or in your repository so consumers can verify signatures.
+
+If `signing-key` is set and the concrete release tag already exists, dispatch verifies the existing tag with
+`git verify-tag` before reusing it.
 
 ### Elevated Permissions via GitHub App Token
 
@@ -141,6 +147,10 @@ events, pull request refs, and tag refs are blocked before any Git or GitHub rel
 Dispatch also requires the current branch to match the repository default branch from the GitHub event payload. This
 prevents accidental releases from feature branches, PR merge refs, detached checkouts, or old maintenance branches.
 
+The checked-out `HEAD` must also match `GITHUB_SHA`. If a workflow checks out a different ref before dispatch runs,
+dispatch stops before creating or reusing tags. When a concrete release tag already exists, dispatch verifies that the
+tag points to the same commit as the current release run before reusing it.
+
 If you intentionally release from a maintenance branch, or from a context where GitHub does not expose the default
 branch in the event payload, set `allow-non-default-branch: true`. This opt-out still does not allow pull request
 events or tag refs.
@@ -149,6 +159,9 @@ events or tag refs.
 
 Tag inputs accept simple Git tag names such as `v1.2.3`, `v1`, and `v1.2`. For safety, tag names cannot contain
 whitespace, control characters, refspec syntax, `..`, or option-like values beginning with `-`.
+
+When provided, `major-tag` and `minor-tag` must match the semantic `release-tag`. For `v1.2.3`, the only matching
+floating tags are `v1` and `v1.2`.
 
 | Input            | Default | Description                                                                                     |
 | ---------------- | ------- | ----------------------------------------------------------------------------------------------- |

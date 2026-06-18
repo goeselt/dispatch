@@ -16,6 +16,7 @@ const {
   expandGlob,
   fetchTag,
   guardReleaseContext,
+  guardReleaseHead,
   isMissingReleaseError,
   parseAssets,
   parseBool,
@@ -23,6 +24,7 @@ const {
   runRelease,
   setupSigning,
   validateAssetPath,
+  validateFloatingTags,
   validateTagName,
 } = require('./release.js')
 
@@ -65,6 +67,7 @@ function releaseContext(overrides = {}) {
     ref: 'refs/heads/main',
     refName: 'main',
     refType: 'branch',
+    sha: 'abc123',
     defaultBranch: 'main',
     ...overrides,
   }
@@ -260,6 +263,37 @@ test('runRelease checks release context before command execution', () => {
     /pull request events/,
   )
   assert.deepEqual(exec.calls, [])
+})
+
+test('guardReleaseHead requires the checkout to match the GitHub event SHA', () => {
+  const exec = makeExec({
+    'git\x00rev-parse\x00HEAD': { stdout: 'def456\n' },
+  })
+
+  assert.throws(
+    () => guardReleaseHead(exec, inputs({ releaseContext: releaseContext({ sha: 'abc123' }) })),
+    /checked-out commit def456/,
+  )
+})
+
+test('guardReleaseHead returns the expected SHA when the checkout matches', () => {
+  const exec = makeExec({
+    'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
+  })
+
+  assert.equal(guardReleaseHead(exec, inputs({ releaseContext: releaseContext({ sha: 'abc123' }) })), 'abc123')
+})
+
+test('validateFloatingTags requires tags to match the release version', () => {
+  assert.doesNotThrow(() => validateFloatingTags(inputs({ majorTag: 'v1', minorTag: 'v1.2' })))
+  assert.throws(
+    () => validateFloatingTags(inputs({ releaseTag: 'v2.0.0', majorTag: 'v1' })),
+    /major-tag must be v2/,
+  )
+  assert.throws(
+    () => validateFloatingTags(inputs({ releaseTag: 'release-1', majorTag: 'v1' })),
+    /semantic release-tag/,
+  )
 })
 
 // Step summaries and failure guidance
@@ -504,6 +538,44 @@ test('runRelease fetches an existing release tag before updating floating tags',
   assert.ok(fetchIdx < floatingIdx, 'release tag must be fetched before updating floating tags')
 })
 
+test('runRelease rejects an existing release tag that points at a different commit', () => {
+  const exec = makeExec({
+    'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'def456\trefs/tags/v1.2.3\n' },
+    'git\x00rev-parse\x00v1.2.3^{}': { stdout: 'def456\n' },
+  })
+
+  assert.throws(
+    () => runRelease(inputs({ releaseContext: releaseContext({ sha: 'abc123' }) }), exec),
+    /release tag v1.2.3 points to def456/,
+  )
+  assert.equal(
+    exec.calls.some((c) => c[0] === 'gh' && c[1] === 'release'),
+    false,
+  )
+})
+
+test('runRelease verifies a reused signed release tag', () => {
+  const exec = makeExec({
+    'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc123\trefs/tags/v1.2.3\n' },
+    'git\x00rev-parse\x00v1.2.3^{}': { stdout: 'abc123\n' },
+    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
+      stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
+    },
+  })
+
+  runRelease(
+    inputs({
+      signingKey: Buffer.from('fake-gpg-key').toString('base64'),
+      releaseContext: releaseContext({ sha: 'abc123' }),
+    }),
+    exec,
+  )
+
+  assert.equal(exec.called('git', 'verify-tag', 'v1.2.3'), true)
+})
+
 test('runRelease fails on an existing draft release instead of reusing stale state', () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
@@ -549,6 +621,16 @@ test('runRelease can create only a tag for GoReleaser', () => {
     exec.calls.some((call) => call[0] === 'gh'),
     false,
   )
+})
+
+test('runRelease blocks floating tags when another tool owns the release', () => {
+  const exec = makeExec()
+
+  assert.throws(
+    () => runRelease(inputs({ createRelease: false, majorTag: 'v1' }), exec),
+    /floating tags require create-release/,
+  )
+  assert.deepEqual(exec.calls, [])
 })
 
 test('runRelease fails when tag is missing and createTag is false', () => {

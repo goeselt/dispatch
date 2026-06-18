@@ -75,6 +75,29 @@ function guardReleaseContext(inputs) {
   }
 }
 
+function hasReleaseContext(context = {}) {
+  return Boolean(context.eventName || context.ref || context.refType || context.refName || context.defaultBranch || context.sha)
+}
+
+function guardReleaseHead(exec, inputs) {
+  const context = inputs.releaseContext || {}
+  if (!hasReleaseContext(context)) return ''
+
+  const expected = context.sha || ''
+  if (!expected) {
+    throw new Error('dispatch could not determine the expected release commit from GITHUB_SHA.')
+  }
+
+  const actual = exec('git', ['rev-parse', 'HEAD']).stdout.trim()
+  if (actual !== expected) {
+    throw new Error(
+      `dispatch is running on checked-out commit ${actual || '(unknown)'}, but the GitHub event points to ${expected}. Check the actions/checkout ref before releasing.`,
+    )
+  }
+
+  return expected
+}
+
 // GitHub Actions command and summary formatting
 
 function escapeWorkflowCommand(value) {
@@ -165,6 +188,35 @@ function validateTagName(tag, name = 'tag') {
 function validateOptionalTagName(tag, name) {
   if (!tag) return ''
   return validateTagName(tag, name)
+}
+
+function semanticVersionParts(tag) {
+  const match = /^(v?)(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(tag)
+  if (!match) return null
+  return {
+    prefix: match[1],
+    major: match[2],
+    minor: match[3],
+  }
+}
+
+function validateFloatingTags(inputs) {
+  if (!inputs.majorTag && !inputs.minorTag) return
+
+  const version = semanticVersionParts(inputs.releaseTag)
+  if (!version) {
+    throw new Error('major-tag and minor-tag require a semantic release-tag such as v1.2.3.')
+  }
+
+  const expectedMajor = `${version.prefix}${version.major}`
+  const expectedMinor = `${version.prefix}${version.major}.${version.minor}`
+
+  if (inputs.majorTag && inputs.majorTag !== expectedMajor) {
+    throw new Error(`major-tag must be ${expectedMajor} for release-tag ${inputs.releaseTag}, got ${inputs.majorTag}.`)
+  }
+  if (inputs.minorTag && inputs.minorTag !== expectedMinor) {
+    throw new Error(`minor-tag must be ${expectedMinor} for release-tag ${inputs.releaseTag}, got ${inputs.minorTag}.`)
+  }
 }
 
 // Asset resolution
@@ -293,6 +345,26 @@ function remoteTagObjectId(exec, tag) {
   return result.stdout.trim().split(/\s+/)[0] || ''
 }
 
+function localTagTargetObjectId(exec, tag) {
+  validateTagName(tag)
+  return exec('git', ['rev-parse', `${tag}^{}`]).stdout.trim()
+}
+
+function verifyTagSignature(exec, tag) {
+  validateTagName(tag)
+  exec('git', ['verify-tag', tag])
+}
+
+function verifyExistingReleaseTag(exec, tag, expectedSha, requireSignature) {
+  if (expectedSha) {
+    const actual = localTagTargetObjectId(exec, tag)
+    if (actual !== expectedSha) {
+      throw new Error(`release tag ${tag} points to ${actual}, but this run is releasing ${expectedSha}.`)
+    }
+  }
+  if (requireSignature) verifyTagSignature(exec, tag)
+}
+
 function tagExists(exec, tag) {
   return remoteTagObjectId(exec, tag) !== ''
 }
@@ -419,6 +491,12 @@ function failureNextStep(error) {
   if (/pull request events|branch refs|default branch|current branch/i.test(message)) {
     return RELEASE_CONTEXT_HELP
   }
+  if (/checked-out commit|expected release commit|release tag .* points to/i.test(message)) {
+    return 'Check the checkout ref and existing release tag before rerunning dispatch.'
+  }
+  if (/major-tag|minor-tag|floating tags/i.test(message)) {
+    return 'Use floating tags that match the release version, or omit them for tag-only releases.'
+  }
 
   return ''
 }
@@ -442,6 +520,11 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
   validateOptionalTagName(inputs.majorTag, 'major-tag')
   validateOptionalTagName(inputs.minorTag, 'minor-tag')
   guardReleaseContext(inputs)
+  validateFloatingTags(inputs)
+  if (!inputs.createRelease && (inputs.majorTag || inputs.minorTag)) {
+    throw new Error('floating tags require create-release to be true; omit major-tag/minor-tag when another tool owns the release.')
+  }
+  const expectedReleaseSha = guardReleaseHead(exec, inputs)
 
   configureGitUser(exec, inputs.gitUserName, inputs.gitUserEmail)
   if (inputs.signingKey) setupSigning(exec, inputs.signingKey)
@@ -450,6 +533,7 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
   let tagCreated = false
   if (tagExists(exec, inputs.releaseTag)) {
     fetchTag(exec, inputs.releaseTag)
+    verifyExistingReleaseTag(exec, inputs.releaseTag, expectedReleaseSha, Boolean(inputs.signingKey))
     process.stdout.write(`tag ${inputs.releaseTag} already exists; reusing it\n`)
   } else if (inputs.createTag) {
     createTag(exec, inputs.releaseTag)
@@ -510,8 +594,10 @@ module.exports = {
   failureNextStep,
   expandGlob,
   fetchTag,
+  guardReleaseHead,
   guardReleaseContext,
   isMissingReleaseError,
+  localTagTargetObjectId,
   parseAssets,
   parseBool,
   releaseView,
@@ -522,5 +608,8 @@ module.exports = {
   tagExists,
   updateFloatingTag,
   validateAssetPath,
+  validateFloatingTags,
   validateTagName,
+  verifyExistingReleaseTag,
+  verifyTagSignature,
 }
