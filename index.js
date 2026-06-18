@@ -3,15 +3,8 @@
 const fs = require('node:fs')
 const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
-const {
-  buildFailureSummary,
-  buildStepSummary,
-  escapeWorkflowCommand,
-  parseAssets,
-  parseBool,
-  parseMakeLatest,
-  runRelease,
-} = require('./release.js')
+const { parseAssets, parseBool, parseMakeLatest, runRelease } = require('./release.js')
+const { buildFailureSummary, buildStepSummary, escapeWorkflowCommand } = require('./summary.js')
 
 function input(name, fallback = '') {
   return process.env[`INPUT_${name.toUpperCase()}`] ?? fallback
@@ -40,10 +33,11 @@ function readDefaultBranch(eventPath) {
   }
 }
 
-function exec(name, args, { allowFailure = false, input } = {}) {
+function exec(name, args, { allowFailure = false, input, env } = {}) {
   try {
     const opts = { encoding: 'utf8', stdio: [input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] }
     if (input !== undefined) opts.input = input
+    if (env) opts.env = env
     const stdout = execFileSync(name, args, opts)
     return { status: 0, stdout, stderr: '' }
   } catch (err) {
@@ -58,10 +52,6 @@ let inputs = {}
 
 try {
   const token = input('GITHUB-TOKEN')
-  if (token) {
-    process.env['GH_TOKEN'] = token
-  }
-
   const actor = process.env['GITHUB_ACTOR'] || 'github-actions[bot]'
   inputs = {
     releaseTag: input('RELEASE-TAG'),
@@ -73,6 +63,7 @@ try {
     assets: parseAssets(input('ASSETS')),
     majorTag: input('MAJOR-TAG'),
     minorTag: input('MINOR-TAG'),
+    githubToken: token,
     gitUserName: input('GIT-USER-NAME', actor),
     gitUserEmail: input('GIT-USER-EMAIL', `${actor}@users.noreply.github.com`),
     releaseContext: {

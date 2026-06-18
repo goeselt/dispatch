@@ -126,8 +126,7 @@ If `signing-key` is set and the concrete release tag already exists, dispatch ve
 
 ### Elevated Permissions via GitHub App Token
 
-The default `GITHUB_TOKEN` cannot push tags that trigger downstream workflows. Use a GitHub App token for the checkout
-and pass it to dispatch:
+The default `GITHUB_TOKEN` cannot push tags that trigger downstream workflows. Pass a GitHub App token to dispatch:
 
 ```yaml
 - id: app
@@ -139,6 +138,7 @@ and pass it to dispatch:
 - uses: actions/checkout@v4
   with:
     token: ${{ steps.app.outputs.token }}
+    persist-credentials: false
 
 - uses: goeselt/dispatch@v1
   with:
@@ -148,8 +148,13 @@ and pass it to dispatch:
     git-user-email: ${{ steps.app.outputs.app-slug }}[bot]@users.noreply.github.com
 ```
 
-When GitHub Actions provides `GITHUB_REPOSITORY`, dispatch checks that `github-token` can access that repository before
-creating or pushing tags, and binds GitHub Release CLI calls to that repository.
+Dispatch uses `github-token` for GitHub CLI calls and as request-scoped authentication for `git fetch`, `git ls-remote`,
+and `git push`. The token is passed only through per-command environment (never `process.env` or `.git/config`): Git
+network commands receive it as a temporary `http.<server>.extraheader`, which also overrides any credential the checkout
+persisted, so `persist-credentials: false` is recommended but not required. Tag pushes use `--no-verify` so local
+`pre-push` hooks cannot observe the token environment. Requires Git >= 2.31 on the runner. When GitHub Actions provides
+`GITHUB_REPOSITORY`, dispatch checks that `github-token` can access that repository before creating or pushing tags, and
+binds GitHub Release CLI calls to that repository.
 
 ## Retry-Safe Workflows
 
@@ -208,7 +213,7 @@ floating tags are `v1` and `v1.2`.
 | `assets`                   |                  | Newline-separated asset files or glob patterns to upload. Paths must exist; globs must match.   |
 | `major-tag`                |                  | Floating major tag to update, e.g. `v1`.                                                        |
 | `minor-tag`                |                  | Floating minor tag to update, e.g. `v1.2`.                                                      |
-| `github-token`             | token            | GitHub token used by `gh`.                                                                      |
+| `github-token`             | token            | GitHub token used by `gh` and temporary Git auth for tag fetch/push operations.                 |
 | `git-user-name`            | actor            | `git user.name` for annotated tags.                                                             |
 | `git-user-email`           | actor            | `git user.email` for annotated tags.                                                            |
 
