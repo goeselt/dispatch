@@ -34,10 +34,11 @@ jobs:
         with:
           fetch-depth: 0 # intent release needs full history to find the previous release tag
           token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
 
       - id: intent
         name: Intent Release
-        uses: goeselt/intent@f6d867043c166cdbe5c9be0ee2fbee84f2065415 # v1.1.0
+        uses: goeselt/intent@c524346424a2bbbb5cb1e399fb1f086236935df2 # v1.1.1
         with:
           initial-version: '1.0.0'
 
@@ -49,10 +50,11 @@ jobs:
 
       - name: Commit Version
         if: steps.intent.outputs.release-needed == 'true'
-        uses: goeselt/scribe@b1f7a92ec86ef50d731050f59624a049854e031a # v1.1.1
+        uses: goeselt/scribe@c233f5828a9590d21e2af93d7f2d4cf6a81ac822 # v1.2.0
         with:
           files: package.json
           message: 'chore: release ${{ steps.intent.outputs.release-tag }}'
+          github-token: ${{ steps.app.outputs.token }}
           git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
           git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}
           signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
