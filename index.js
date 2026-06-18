@@ -81,6 +81,7 @@ try {
       refName: process.env['GITHUB_REF_NAME'] || '',
       refType: process.env['GITHUB_REF_TYPE'] || '',
       sha: process.env['GITHUB_SHA'] || '',
+      repository: process.env['GITHUB_REPOSITORY'] || '',
       defaultBranch: readDefaultBranch(process.env['GITHUB_EVENT_PATH']),
     },
   }

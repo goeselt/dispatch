@@ -148,6 +148,9 @@ and pass it to dispatch:
     git-user-email: ${{ steps.app.outputs.app-slug }}[bot]@users.noreply.github.com
 ```
 
+When GitHub Actions provides `GITHUB_REPOSITORY`, dispatch checks that `github-token` can access that repository before
+creating or pushing tags, and binds GitHub Release CLI calls to that repository.
+
 ## Retry-Safe Workflows
 
 Dispatch is designed to be safe to rerun for the same `release-tag`: it reuses an existing tag, reuses an existing

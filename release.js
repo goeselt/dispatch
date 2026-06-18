@@ -1,6 +1,7 @@
 'use strict'
 
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 
 const TAG_HELP = 'Use a simple tag such as v1.2.3, v1, or v1.2.'
@@ -346,9 +347,41 @@ function resolveAssets(entries, cwd = process.cwd()) {
 
 // Git and GitHub CLI operations
 
+function parseSecretKeyFingerprint(colonOutput) {
+  for (const line of String(colonOutput ?? '').split(/\r?\n/)) {
+    const fields = line.split(':')
+    if (fields[0] === 'fpr' && fields[9]) return fields[9]
+  }
+  return ''
+}
+
 function setupSigning(exec, signingKey) {
-  exec('gpg', ['--import', '--batch'], { input: Buffer.from(signingKey, 'base64') })
-  exec('git', ['config', 'tag.gpgsign', 'true'])
+  const previousGnupgHome = process.env['GNUPGHOME']
+  const gnupgHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-gnupg-'))
+  fs.chmodSync(gnupgHome, 0o700)
+  process.env['GNUPGHOME'] = gnupgHome
+
+  const cleanup = () => {
+    if (previousGnupgHome === undefined) {
+      delete process.env['GNUPGHOME']
+    } else {
+      process.env['GNUPGHOME'] = previousGnupgHome
+    }
+    fs.rmSync(gnupgHome, { recursive: true, force: true })
+  }
+
+  try {
+    exec('gpg', ['--import', '--batch'], { input: Buffer.from(signingKey, 'base64') })
+    const keys = exec('gpg', ['--batch', '--list-secret-keys', '--with-colons', '--fingerprint']).stdout
+    const fingerprint = parseSecretKeyFingerprint(keys)
+    if (!fingerprint) throw new Error('could not determine imported signing key fingerprint')
+    exec('git', ['config', 'user.signingkey', fingerprint])
+    exec('git', ['config', 'tag.gpgsign', 'true'])
+    return cleanup
+  } catch (err) {
+    cleanup()
+    throw err
+  }
 }
 
 function configureGitUser(exec, name, email) {
@@ -356,8 +389,13 @@ function configureGitUser(exec, name, email) {
   if (email) exec('git', ['config', 'user.email', email])
 }
 
-function checkReleaseAuth(exec) {
+function checkReleaseAuth(exec, repo = '') {
   exec('gh', ['auth', 'status'])
+  if (repo) exec('gh', ['repo', 'view', repo, '--json', 'nameWithOwner'])
+}
+
+function ghRepoArgs(repo = '') {
+  return repo ? ['--repo', repo] : []
 }
 
 function remoteTagObjectId(exec, tag) {
@@ -414,9 +452,11 @@ function isMissingReleaseError(output) {
   return /(^|[\s:])(?:release )?not found(?:[\s.]|$)|HTTP 404/i.test(output)
 }
 
-function releaseView(exec, tag) {
+function releaseView(exec, tag, repo = '') {
   validateTagName(tag)
-  const result = exec('gh', ['release', 'view', tag, '--json', 'url,isDraft'], { allowFailure: true })
+  const result = exec('gh', ['release', 'view', tag, ...ghRepoArgs(repo), '--json', 'url,isDraft'], {
+    allowFailure: true,
+  })
   if (result.status !== 0) {
     const output = result.stderr || result.stdout
     if (isMissingReleaseError(output)) return { exists: false, url: '' }
@@ -451,8 +491,18 @@ function releaseCreateLatestArgs(inputs = {}) {
 function createRelease(exec, tag, assets = [], options = {}) {
   validateTagName(tag)
   const latestArgs = releaseCreateLatestArgs(options)
+  const repoArgs = ghRepoArgs(options.releaseContext?.repository)
   const assetArgs = assets.length > 0 ? ['--', ...assets] : []
-  const result = exec('gh', ['release', 'create', tag, '--generate-notes', '--verify-tag', ...latestArgs, ...assetArgs])
+  const result = exec('gh', [
+    'release',
+    'create',
+    tag,
+    ...repoArgs,
+    '--generate-notes',
+    '--verify-tag',
+    ...latestArgs,
+    ...assetArgs,
+  ])
   return result.stdout.trim()
 }
 
@@ -526,7 +576,7 @@ function failureNextStep(error) {
   if (/(release-tag|major-tag|minor-tag).*?(tag name|must not|not allowed|required)/i.test(message)) {
     return TAG_HELP
   }
-  if (/not logged in|bad credentials|could not check release|gh auth status/i.test(message)) {
+  if (/not logged in|bad credentials|could not check release|gh auth status|gh repo view/i.test(message)) {
     return 'Check the github-token input and repository permissions, then rerun dispatch.'
   }
   if (/force-with-lease/i.test(message)) {
@@ -572,60 +622,65 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
   }
   const expectedReleaseSha = guardReleaseHead(exec, inputs)
 
-  configureGitUser(exec, inputs.gitUserName, inputs.gitUserEmail)
-  if (inputs.signingKey) setupSigning(exec, inputs.signingKey)
-  if (inputs.createRelease) checkReleaseAuth(exec)
+  let cleanupSigning = () => {}
+  try {
+    configureGitUser(exec, inputs.gitUserName, inputs.gitUserEmail)
+    if (inputs.signingKey) cleanupSigning = setupSigning(exec, inputs.signingKey)
+    if (inputs.createRelease) checkReleaseAuth(exec, inputs.releaseContext?.repository)
 
-  let tagCreated = false
-  if (tagExists(exec, inputs.releaseTag)) {
-    fetchTag(exec, inputs.releaseTag)
-    verifyExistingReleaseTag(exec, inputs.releaseTag, expectedReleaseSha, Boolean(inputs.signingKey))
-    process.stdout.write(`tag ${inputs.releaseTag} already exists; reusing it\n`)
-  } else if (inputs.createTag) {
-    createTag(exec, inputs.releaseTag)
-    tagCreated = true
-  } else {
-    throw new Error(`release tag ${inputs.releaseTag} does not exist and create-tag is false`)
-  }
-
-  let releaseCreated = false
-  let releaseUrl = ''
-  let assetsUploaded = 0
-  if (inputs.createRelease) {
-    const existing = releaseView(exec, inputs.releaseTag)
-    if (existing.exists) {
-      if (existing.isDraft) {
-        throw new Error(
-          `release ${inputs.releaseTag} exists but is still a draft; delete or publish it before rerunning`,
-        )
-      }
-      releaseUrl = existing.url
-      process.stdout.write(`release ${inputs.releaseTag} already exists; reusing it\n`)
-      if (inputs.assets.length > 0) {
-        throw new Error(
-          `release ${inputs.releaseTag} already exists, but assets were requested. Dispatch does not upload assets to an existing release because immutable releases cannot be repaired after publish.`,
-        )
-      }
+    let tagCreated = false
+    if (tagExists(exec, inputs.releaseTag)) {
+      fetchTag(exec, inputs.releaseTag)
+      verifyExistingReleaseTag(exec, inputs.releaseTag, expectedReleaseSha, Boolean(inputs.signingKey))
+      process.stdout.write(`tag ${inputs.releaseTag} already exists; reusing it\n`)
+    } else if (inputs.createTag) {
+      createTag(exec, inputs.releaseTag)
+      tagCreated = true
     } else {
-      const assets = resolveAssets(inputs.assets, cwd)
-      releaseUrl = createRelease(exec, inputs.releaseTag, assets, inputs)
-      releaseCreated = true
-      assetsUploaded = assets.length
+      throw new Error(`release tag ${inputs.releaseTag} does not exist and create-tag is false`)
     }
-  } else if (inputs.assets.length > 0) {
-    writeWarning('assets specified but create-release is false; assets will not be uploaded')
-  }
 
-  const majorTagUpdated = updateFloatingTag(exec, inputs.majorTag, inputs.releaseTag)
-  const minorTagUpdated = updateFloatingTag(exec, inputs.minorTag, inputs.releaseTag)
+    let releaseCreated = false
+    let releaseUrl = ''
+    let assetsUploaded = 0
+    if (inputs.createRelease) {
+      const existing = releaseView(exec, inputs.releaseTag, inputs.releaseContext?.repository)
+      if (existing.exists) {
+        if (existing.isDraft) {
+          throw new Error(
+            `release ${inputs.releaseTag} exists but is still a draft; delete or publish it before rerunning`,
+          )
+        }
+        releaseUrl = existing.url
+        process.stdout.write(`release ${inputs.releaseTag} already exists; reusing it\n`)
+        if (inputs.assets.length > 0) {
+          throw new Error(
+            `release ${inputs.releaseTag} already exists, but assets were requested. Dispatch does not upload assets to an existing release because immutable releases cannot be repaired after publish.`,
+          )
+        }
+      } else {
+        const assets = resolveAssets(inputs.assets, cwd)
+        releaseUrl = createRelease(exec, inputs.releaseTag, assets, inputs)
+        releaseCreated = true
+        assetsUploaded = assets.length
+      }
+    } else if (inputs.assets.length > 0) {
+      writeWarning('assets specified but create-release is false; assets will not be uploaded')
+    }
 
-  return {
-    tagCreated,
-    releaseCreated,
-    releaseUrl,
-    assetsUploaded,
-    majorTagUpdated,
-    minorTagUpdated,
+    const majorTagUpdated = updateFloatingTag(exec, inputs.majorTag, inputs.releaseTag)
+    const minorTagUpdated = updateFloatingTag(exec, inputs.minorTag, inputs.releaseTag)
+
+    return {
+      tagCreated,
+      releaseCreated,
+      releaseUrl,
+      assetsUploaded,
+      majorTagUpdated,
+      minorTagUpdated,
+    }
+  } finally {
+    cleanupSigning()
   }
 }
 
@@ -647,6 +702,7 @@ module.exports = {
   parseAssets,
   parseBool,
   parseMakeLatest,
+  parseSecretKeyFingerprint,
   releaseView,
   releaseCreateLatestArgs,
   remoteTagObjectId,

@@ -54,7 +54,11 @@ to regular files inside the checked-out workspace. Keep these checks boring and 
 for clever parsing.
 
 When `signing-key` is set, existing concrete release tags must pass `git verify-tag` before they are reused. New release
-tags are signed through `git config tag.gpgsign true`.
+tags are signed through a temporary `GNUPGHOME`; Git is pinned to the imported key fingerprint, and the temporary
+keyring is removed before the action exits.
+
+When `GITHUB_REPOSITORY` is present, GitHub CLI release calls should stay bound to that repository and release auth
+checks should happen before the concrete tag is created or pushed.
 
 ## Code Organization
 

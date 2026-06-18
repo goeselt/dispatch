@@ -21,6 +21,7 @@ const {
   parseAssets,
   parseBool,
   parseMakeLatest,
+  parseSecretKeyFingerprint,
   releaseCreateLatestArgs,
   resolveAssets,
   runRelease,
@@ -79,16 +80,44 @@ function releaseContext(overrides = {}) {
 // Git/GitHub command wrappers
 
 test('setupSigning imports the GPG key and enables tag signing', () => {
-  const exec = makeExec()
-  setupSigning(exec, Buffer.from('fake-gpg-key').toString('base64'))
+  const previousGnupgHome = process.env.GNUPGHOME
+  const exec = makeExec({
+    'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
+      stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
+    },
+  })
+
+  const cleanup = setupSigning(exec, Buffer.from('fake-gpg-key').toString('base64'))
+  const gnupgHome = process.env.GNUPGHOME
+
   assert.ok(exec.called('gpg', '--import', '--batch'))
+  assert.ok(exec.called('gpg', '--batch', '--list-secret-keys', '--with-colons', '--fingerprint'))
+  assert.ok(exec.called('git', 'config', 'user.signingkey', 'ABCDEF1234567890'))
   assert.ok(exec.called('git', 'config', 'tag.gpgsign', 'true'))
+  assert.ok(gnupgHome)
+  assert.ok(fs.existsSync(gnupgHome))
+
+  cleanup()
+  assert.equal(process.env.GNUPGHOME, previousGnupgHome)
+  assert.equal(fs.existsSync(gnupgHome), false)
+})
+
+test('parseSecretKeyFingerprint reads the imported secret key fingerprint', () => {
+  assert.equal(parseSecretKeyFingerprint('sec:::::::::\nfpr:::::::::ABCDEF:\n'), 'ABCDEF')
+  assert.equal(parseSecretKeyFingerprint(''), '')
 })
 
 test('checkReleaseAuth verifies gh authentication', () => {
   const exec = makeExec()
   checkReleaseAuth(exec)
   assert.ok(exec.called('gh', 'auth', 'status'))
+})
+
+test('checkReleaseAuth verifies the target repository when known', () => {
+  const exec = makeExec()
+  checkReleaseAuth(exec, 'goeselt/dispatch')
+  assert.ok(exec.called('gh', 'auth', 'status'))
+  assert.ok(exec.called('gh', 'repo', 'view', 'goeselt/dispatch', '--json', 'nameWithOwner'))
 })
 
 test('fetchTag refreshes the release tag from origin', () => {
@@ -116,7 +145,11 @@ test('isMissingReleaseError recognizes only missing release responses', () => {
 // Release setup orchestration
 
 test('runRelease signs tags when signing-key is provided', () => {
+  const previousGnupgHome = process.env.GNUPGHOME
   const exec = makeExec({
+    'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
+      stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
+    },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
     'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
@@ -127,7 +160,9 @@ test('runRelease signs tags when signing-key is provided', () => {
   runRelease(inputs({ signingKey: Buffer.from('fake-gpg-key').toString('base64') }), exec)
 
   assert.ok(exec.called('gpg', '--import', '--batch'), 'GPG key not imported')
+  assert.ok(exec.called('git', 'config', 'user.signingkey', 'ABCDEF1234567890'), 'signing key not pinned')
   assert.ok(exec.called('git', 'config', 'tag.gpgsign', 'true'), 'tag signing not enabled')
+  assert.equal(process.env.GNUPGHOME, previousGnupgHome)
 })
 
 test('runRelease does not configure GPG when no signing-key is given', () => {
@@ -503,6 +538,22 @@ test('createRelease passes explicit latest policy to gh', () => {
   )
 })
 
+test('createRelease binds gh to the GitHub event repository when available', () => {
+  const exec = makeExec({
+    'gh\x00release\x00create\x00v1.2.3\x00--repo\x00goeselt/dispatch\x00--generate-notes\x00--verify-tag': {
+      stdout: 'https://github.com/goeselt/dispatch/releases/tag/v1.2.3\n',
+    },
+  })
+
+  const url = createRelease(exec, 'v1.2.3', [], inputs({ releaseContext: { repository: 'goeselt/dispatch' } }))
+
+  assert.equal(url, 'https://github.com/goeselt/dispatch/releases/tag/v1.2.3')
+  assert.equal(
+    exec.called('gh', 'release', 'create', 'v1.2.3', '--repo', 'goeselt/dispatch', '--generate-notes', '--verify-tag'),
+    true,
+  )
+})
+
 // Release orchestration
 
 test('runRelease creates tag and release', () => {
@@ -548,6 +599,18 @@ test('runRelease fails before creating a tag when release auth fails', () => {
   })
 
   assert.throws(() => runRelease(inputs(), exec), /not logged in/)
+  assert.equal(
+    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag'),
+    false,
+  )
+})
+
+test('runRelease verifies target repository access before creating a tag', () => {
+  const exec = makeExec({
+    'gh\x00repo\x00view\x00goeselt/dispatch\x00--json\x00nameWithOwner': { status: 1, stderr: 'HTTP 403' },
+  })
+
+  assert.throws(() => runRelease(inputs({ releaseContext: { repository: 'goeselt/dispatch' } }), exec), /HTTP 403/)
   assert.equal(
     exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag'),
     false,
@@ -607,6 +670,9 @@ test('runRelease rejects an existing release tag that points at a different comm
 
 test('runRelease verifies a reused signed release tag', () => {
   const exec = makeExec({
+    'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
+      stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
+    },
     'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc123\trefs/tags/v1.2.3\n' },
     'git\x00rev-parse\x00v1.2.3^{}': { stdout: 'abc123\n' },

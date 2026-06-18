@@ -79,7 +79,8 @@ steps:
       signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
 ```
 
-Dispatch imports the private key inside the job, enables `tag.gpgsign`, and creates annotated signed tags.
+Dispatch imports the private key into a temporary `GNUPGHOME`, pins Git to the imported key fingerprint, enables
+`tag.gpgsign`, creates annotated signed tags, and removes the temporary keyring before the action exits.
 
 ## Verify A Release Tag
 
