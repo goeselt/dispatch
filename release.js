@@ -5,6 +5,8 @@ const path = require('node:path')
 
 const TAG_HELP = 'Use a simple tag such as v1.2.3, v1, or v1.2.'
 const ASSET_HELP = 'Use a path to an existing regular file under the checked-out workspace.'
+const RELEASE_CONTEXT_HELP =
+  'Run dispatch from push, workflow_dispatch, or schedule on the default branch, or set allow-non-default-branch to true for an intentional branch release.'
 
 function parseBool(value, name) {
   const normalized = String(value ?? '')
@@ -20,6 +22,53 @@ function parseAssets(input) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
+}
+
+function inferRefType(ref) {
+  if (ref?.startsWith('refs/heads/')) return 'branch'
+  if (ref?.startsWith('refs/tags/')) return 'tag'
+  if (ref?.startsWith('refs/pull/')) return 'pull_request'
+  return ''
+}
+
+function branchNameFromRef(ref) {
+  return ref?.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ''
+}
+
+function guardReleaseContext(inputs) {
+  const context = inputs.releaseContext || {}
+  const eventName = context.eventName || ''
+  const ref = context.ref || ''
+  const refType = context.refType || inferRefType(ref)
+  const refName = context.refName || branchNameFromRef(ref)
+  const defaultBranch = context.defaultBranch || ''
+  const hasGitHubContext = Boolean(eventName || ref || refType || refName || defaultBranch)
+
+  if (!hasGitHubContext) return
+
+  if (eventName.startsWith('pull_request') || ref.startsWith('refs/pull/')) {
+    throw new Error(`dispatch cannot create releases from pull request events. ${RELEASE_CONTEXT_HELP}`)
+  }
+
+  if (refType && refType !== 'branch') {
+    throw new Error(`dispatch can only create releases from branch refs; got ${refType}. ${RELEASE_CONTEXT_HELP}`)
+  }
+
+  if (!refName) {
+    throw new Error(`dispatch could not determine the current branch. ${RELEASE_CONTEXT_HELP}`)
+  }
+
+  if (!defaultBranch && !inputs.allowNonDefaultBranch) {
+    throw new Error(
+      'dispatch could not determine the repository default branch from the GitHub event payload. Set allow-non-default-branch to true only if this release is intentional.',
+    )
+  }
+
+  if (defaultBranch && refName !== defaultBranch && !inputs.allowNonDefaultBranch) {
+    throw new Error(
+      `dispatch is running on ${refName}, but releases are only allowed from the default branch ${defaultBranch}. Set allow-non-default-branch to true only if this branch release is intentional.`,
+    )
+  }
 }
 
 function escapeWorkflowCommand(value) {
@@ -353,6 +402,9 @@ function failureNextStep(error) {
   if (/force-with-lease/i.test(message)) {
     return 'Another run updated the floating tag first. Rerun dispatch after the newer release finishes.'
   }
+  if (/pull request events|branch refs|default branch|current branch/i.test(message)) {
+    return RELEASE_CONTEXT_HELP
+  }
 
   return ''
 }
@@ -373,6 +425,7 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
   validateTagName(inputs.releaseTag, 'release-tag')
   validateOptionalTagName(inputs.majorTag, 'major-tag')
   validateOptionalTagName(inputs.minorTag, 'minor-tag')
+  guardReleaseContext(inputs)
 
   configureGitUser(exec, inputs.gitUserName, inputs.gitUserEmail)
   if (inputs.signingKey) setupSigning(exec, inputs.signingKey)
@@ -440,6 +493,7 @@ module.exports = {
   failureNextStep,
   expandGlob,
   fetchTag,
+  guardReleaseContext,
   isMissingReleaseError,
   parseAssets,
   parseBool,

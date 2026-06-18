@@ -19,6 +19,10 @@ inputs:
     description: 'Create the GitHub Release. Set false when another tool, such as GoReleaser, owns the release.'
     required: false
     default: 'true'
+  allow-non-default-branch:
+    description: 'Allow releases from a non-default branch. Pull request events and tag refs are still blocked.'
+    required: false
+    default: 'false'
   signing-key:
     description: 'Base64-encoded GPG private key. When set, all annotated tags created by this action are signed.'
     required: false

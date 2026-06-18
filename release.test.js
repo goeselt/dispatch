@@ -15,6 +15,7 @@ const {
   failureNextStep,
   expandGlob,
   fetchTag,
+  guardReleaseContext,
   isMissingReleaseError,
   parseAssets,
   parseBool,
@@ -46,12 +47,25 @@ function inputs(overrides = {}) {
     releaseTag: 'v1.2.3',
     createTag: true,
     createRelease: true,
+    allowNonDefaultBranch: false,
     signingKey: '',
     assets: [],
     majorTag: '',
     minorTag: '',
     gitUserName: '',
     gitUserEmail: '',
+    releaseContext: {},
+    ...overrides,
+  }
+}
+
+function releaseContext(overrides = {}) {
+  return {
+    eventName: 'push',
+    ref: 'refs/heads/main',
+    refName: 'main',
+    refType: 'branch',
+    defaultBranch: 'main',
     ...overrides,
   }
 }
@@ -153,6 +167,95 @@ test('runRelease rejects unsafe release tags before command execution', () => {
   assert.deepEqual(exec.calls, [])
 })
 
+test('guardReleaseContext allows default-branch releases', () => {
+  assert.doesNotThrow(() => guardReleaseContext(inputs({ releaseContext: releaseContext() })))
+})
+
+test('guardReleaseContext blocks pull request events', () => {
+  assert.throws(
+    () =>
+      guardReleaseContext(
+        inputs({
+          releaseContext: releaseContext({
+            eventName: 'pull_request',
+            ref: 'refs/pull/12/merge',
+            refName: '12/merge',
+          }),
+        }),
+      ),
+    /pull request events/,
+  )
+})
+
+test('guardReleaseContext blocks tag refs', () => {
+  assert.throws(
+    () =>
+      guardReleaseContext(
+        inputs({
+          releaseContext: releaseContext({
+            ref: 'refs/tags/v1.2.3',
+            refName: 'v1.2.3',
+            refType: 'tag',
+          }),
+        }),
+      ),
+    /branch refs/,
+  )
+})
+
+test('guardReleaseContext blocks non-default branches unless explicitly allowed', () => {
+  assert.throws(
+    () =>
+      guardReleaseContext(
+        inputs({
+          releaseContext: releaseContext({
+            ref: 'refs/heads/release-candidate',
+            refName: 'release-candidate',
+          }),
+        }),
+      ),
+    /default branch main/,
+  )
+
+  assert.doesNotThrow(() =>
+    guardReleaseContext(
+      inputs({
+        allowNonDefaultBranch: true,
+        releaseContext: releaseContext({
+          ref: 'refs/heads/release-candidate',
+          refName: 'release-candidate',
+        }),
+      }),
+    ),
+  )
+})
+
+test('guardReleaseContext blocks GitHub contexts without a default branch', () => {
+  assert.throws(
+    () => guardReleaseContext(inputs({ releaseContext: releaseContext({ defaultBranch: '' }) })),
+    /could not determine the repository default branch/,
+  )
+
+  assert.doesNotThrow(() =>
+    guardReleaseContext(
+      inputs({
+        allowNonDefaultBranch: true,
+        releaseContext: releaseContext({ defaultBranch: '' }),
+      }),
+    ),
+  )
+})
+
+test('runRelease checks release context before command execution', () => {
+  const exec = makeExec()
+
+  assert.throws(
+    () => runRelease(inputs({ releaseContext: releaseContext({ eventName: 'pull_request' }) }), exec),
+    /pull request events/,
+  )
+  assert.deepEqual(exec.calls, [])
+})
+
 test('buildStepSummary describes the release result', () => {
   const summary = buildStepSummary(inputs({ majorTag: 'v1', minorTag: 'v1.2' }), {
     tagCreated: true,
@@ -239,6 +342,7 @@ test('failureNextStep maps common release failures to recovery guidance', () => 
   assert.match(failureNextStep(new Error('release v1.2.3 exists but is still a draft')), /Publish or delete/)
   assert.match(failureNextStep(new Error('release tag v1.2.3 does not exist and create-tag is false')), /Create the tag/)
   assert.match(failureNextStep(new Error('gh auth status: not logged in')), /github-token/)
+  assert.match(failureNextStep(new Error('dispatch cannot create releases from pull request events')), /default branch/)
 })
 
 test('expandGlob resolves simple file globs', () => {

@@ -29,6 +29,16 @@ function appendStepSummary(markdown) {
   fs.appendFileSync(summaryFile, `${markdown}\n`)
 }
 
+function readDefaultBranch(eventPath) {
+  if (!eventPath) return ''
+  try {
+    const event = JSON.parse(fs.readFileSync(eventPath, 'utf8'))
+    return event?.repository?.default_branch || ''
+  } catch {
+    return ''
+  }
+}
+
 function exec(name, args, { allowFailure = false, input } = {}) {
   try {
     const opts = { encoding: 'utf8', stdio: [input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] }
@@ -56,12 +66,20 @@ try {
     releaseTag: input('RELEASE-TAG'),
     createTag: parseBool(input('CREATE-TAG', 'true'), 'create-tag'),
     createRelease: parseBool(input('CREATE-RELEASE', 'true'), 'create-release'),
+    allowNonDefaultBranch: parseBool(input('ALLOW-NON-DEFAULT-BRANCH', 'false'), 'allow-non-default-branch'),
     signingKey: input('SIGNING-KEY'),
     assets: parseAssets(input('ASSETS')),
     majorTag: input('MAJOR-TAG'),
     minorTag: input('MINOR-TAG'),
     gitUserName: input('GIT-USER-NAME', actor),
     gitUserEmail: input('GIT-USER-EMAIL', `${actor}@users.noreply.github.com`),
+    releaseContext: {
+      eventName: process.env['GITHUB_EVENT_NAME'] || '',
+      ref: process.env['GITHUB_REF'] || '',
+      refName: process.env['GITHUB_REF_NAME'] || '',
+      refType: process.env['GITHUB_REF_TYPE'] || '',
+      defaultBranch: readDefaultBranch(process.env['GITHUB_EVENT_PATH']),
+    },
   }
 
   const result = runRelease(inputs, exec)

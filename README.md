@@ -133,6 +133,18 @@ only when the current run just produced a fresh version bump. A retry-safe flow 
 - release tag and published GitHub Release exist: dispatch reuses both and refreshes floating tags.
 - existing draft release: dispatch stops and asks you to delete or publish it before rerunning.
 
+## Release Context Guards
+
+Dispatch creates repository-visible tags and releases, so it only runs from branch contexts by default. Pull request
+events, pull request refs, and tag refs are blocked before any Git or GitHub release command runs.
+
+Dispatch also requires the current branch to match the repository default branch from the GitHub event payload. This
+prevents accidental releases from feature branches, PR merge refs, detached checkouts, or old maintenance branches.
+
+If you intentionally release from a maintenance branch, or from a context where GitHub does not expose the default
+branch in the event payload, set `allow-non-default-branch: true`. This opt-out still does not allow pull request
+events or tag refs.
+
 ## Inputs
 
 Tag inputs accept simple Git tag names such as `v1.2.3`, `v1`, and `v1.2`. For safety, tag names cannot contain
@@ -143,6 +155,7 @@ whitespace, control characters, refspec syntax, `..`, or option-like values begi
 | `release-tag`    |         | Release tag name, for example `v1.2.3`. **Required.**                                           |
 | `create-tag`     | `true`  | Create and push the release tag when it does not already exist.                                 |
 | `create-release` | `true`  | Create the GitHub Release.                                                                      |
+| `allow-non-default-branch` | `false` | Allow releases from a non-default branch. PR events and tag refs remain blocked.      |
 | `signing-key`    |         | Base64-encoded GPG private key. When set, all annotated tags created by this action are signed. |
 | `assets`         |         | Newline-separated asset files or glob patterns to upload.                                       |
 | `major-tag`      |         | Floating major tag to update, e.g. `v1`.                                                        |
