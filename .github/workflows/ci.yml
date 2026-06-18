@@ -26,9 +26,10 @@ jobs:
       pull-requests: write
     steps:
       - name: Validate Intent
-        uses: goeselt/intent@d168da88e1330163fb8943b119685d2af453fd8d # v1.0.2
+        uses: goeselt/intent@f6d867043c166cdbe5c9be0ee2fbee84f2065415 # v1.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-comment: true
 
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
