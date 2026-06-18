@@ -20,6 +20,8 @@ const {
   isMissingReleaseError,
   parseAssets,
   parseBool,
+  parseMakeLatest,
+  releaseCreateLatestArgs,
   resolveAssets,
   runRelease,
   setupSigning,
@@ -50,6 +52,7 @@ function inputs(overrides = {}) {
     createTag: true,
     createRelease: true,
     allowNonDefaultBranch: false,
+    makeLatest: 'default-branch',
     signingKey: '',
     assets: [],
     majorTag: '',
@@ -151,6 +154,14 @@ test('parseBool accepts true and false only', () => {
   assert.equal(parseBool('true', 'draft'), true)
   assert.equal(parseBool('FALSE', 'draft'), false)
   assert.throws(() => parseBool('yes', 'draft'), /must be true or false/)
+})
+
+test('parseMakeLatest accepts the supported latest policies only', () => {
+  assert.equal(parseMakeLatest('default-branch'), 'default-branch')
+  assert.equal(parseMakeLatest('AUTO'), 'auto')
+  assert.equal(parseMakeLatest('true'), 'true')
+  assert.equal(parseMakeLatest('false'), 'false')
+  assert.throws(() => parseMakeLatest('legacy'), /must be default-branch, auto, true, or false/)
 })
 
 test('parseAssets trims newline-separated assets', () => {
@@ -408,6 +419,13 @@ test('resolveAssets expands globs and preserves plain paths', () => {
   assert.deepEqual(resolveAssets(['README.md', 'dist/*.zip'], dir), ['README.md', 'dist/a.zip'])
 })
 
+test('resolveAssets fails when a glob matches no files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
+  fs.mkdirSync(path.join(dir, 'dist'))
+
+  assert.throws(() => resolveAssets(['dist/*.zip'], dir), /matched no files/)
+})
+
 test('validateAssetPath rejects assets outside the workspace', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
   const dir = path.join(root, 'work')
@@ -449,6 +467,41 @@ test('createRelease separates asset names from gh flags', () => {
   assert.equal(url, 'https://github.com/org/repo/releases/tag/v1.2.3')
   assert.equal(
     exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--', '--repo', 'owner/repo'),
+    true,
+  )
+})
+
+test('releaseCreateLatestArgs keeps latest automatic on default-branch releases', () => {
+  assert.deepEqual(releaseCreateLatestArgs(inputs({ releaseContext: releaseContext() })), [])
+})
+
+test('releaseCreateLatestArgs disables latest for non-default branch releases by default', () => {
+  assert.deepEqual(
+    releaseCreateLatestArgs(
+      inputs({
+        allowNonDefaultBranch: true,
+        releaseContext: releaseContext({
+          ref: 'refs/heads/1.x',
+          refName: '1.x',
+        }),
+      }),
+    ),
+    ['--latest=false'],
+  )
+})
+
+test('createRelease passes explicit latest policy to gh', () => {
+  const exec = makeExec({
+    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--latest=false': {
+      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
+    },
+  })
+
+  const url = createRelease(exec, 'v1.2.3', [], inputs({ makeLatest: 'false' }))
+
+  assert.equal(url, 'https://github.com/org/repo/releases/tag/v1.2.3')
+  assert.equal(
+    exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--latest=false'),
     true,
   )
 })
@@ -670,6 +723,34 @@ test('runRelease uploads assets and updates floating tags', () => {
   )
 })
 
+test('runRelease disables latest for intentional non-default branch releases by default', () => {
+  const exec = makeExec({
+    'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
+    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--latest=false': {
+      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
+    },
+  })
+
+  const result = runRelease(
+    inputs({
+      allowNonDefaultBranch: true,
+      releaseContext: releaseContext({
+        ref: 'refs/heads/1.x',
+        refName: '1.x',
+      }),
+    }),
+    exec,
+  )
+
+  assert.equal(result.releaseCreated, true)
+  assert.equal(
+    exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--latest=false'),
+    true,
+  )
+})
+
 test('runRelease warns when assets are specified but create-release is false', () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
@@ -724,30 +805,15 @@ test('runRelease updates floating tags with an explicit force-with-lease expecta
   )
 })
 
-test('runRelease skips asset upload when release already exists', () => {
+test('runRelease fails when assets are requested for an existing release', () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
     'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
       stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
     },
   })
-  const written = []
-  const origWrite = process.stdout.write.bind(process.stdout)
-  process.stdout.write = (msg) => {
-    written.push(msg)
-    return true
-  }
 
-  let result
-  try {
-    result = runRelease(inputs({ assets: ['dist/*.zip'] }), exec)
-  } finally {
-    process.stdout.write = origWrite
-  }
-
-  assert.equal(result.assetsUploaded, 0)
-  assert.ok(written.some((line) => line.includes('release v1.2.3 already exists')))
-  assert.ok(written.some((line) => line.includes('existing releases are reused without uploading assets')))
+  assert.throws(() => runRelease(inputs({ assets: ['dist/*.zip'] }), exec), /assets were requested/)
   assert.equal(
     exec.calls.some((call) => call[0] === 'gh' && call[1] === 'release' && call[2] === 'upload'),
     false,

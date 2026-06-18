@@ -19,6 +19,14 @@ function parseBool(value, name) {
   throw new Error(`${name} must be true or false, got ${JSON.stringify(value)}`)
 }
 
+function parseMakeLatest(value, name = 'make-latest') {
+  const normalized = String(value ?? 'default-branch')
+    .trim()
+    .toLowerCase()
+  if (['default-branch', 'auto', 'true', 'false'].includes(normalized)) return normalized
+  throw new Error(`${name} must be default-branch, auto, true, or false, got ${JSON.stringify(value)}`)
+}
+
 function parseAssets(input) {
   return String(input ?? '')
     .split(/\r?\n/)
@@ -315,7 +323,9 @@ function resolveAssets(entries, cwd = process.cwd()) {
 
     const matches = expandGlob(entry, cwd)
     if (matches.length === 0) {
-      writeWarning(`asset pattern matched no files: ${entry}. Check that a build step creates the files before dispatch runs.`)
+      throw new Error(
+        `asset pattern ${entry} matched no files. Check that a build step creates the files before dispatch runs and that the path is relative to the checkout root.`,
+      )
     }
     assets.push(...matches.map((match) => validateAssetPath(match, cwd)))
   }
@@ -411,10 +421,26 @@ function releaseView(exec, tag) {
 
 // Assets are passed to `gh release create` directly so GitHub CLI can create a draft, upload assets, and publish it.
 // With release immutability on, a separate upload after publishing fails because assets can no longer be modified.
-function createRelease(exec, tag, assets = []) {
+function releaseCreateLatestArgs(inputs = {}) {
+  const makeLatest = inputs.makeLatest || 'default-branch'
+  if (makeLatest === 'true') return ['--latest']
+  if (makeLatest === 'false') return ['--latest=false']
+  if (makeLatest === 'auto') return []
+
+  const context = inputs.releaseContext || {}
+  if (!hasReleaseContext(context)) return []
+
+  const refName = context.refName || branchNameFromRef(context.ref || '')
+  const defaultBranch = context.defaultBranch || ''
+  if (defaultBranch && refName && refName === defaultBranch) return []
+  return ['--latest=false']
+}
+
+function createRelease(exec, tag, assets = [], options = {}) {
   validateTagName(tag)
+  const latestArgs = releaseCreateLatestArgs(options)
   const assetArgs = assets.length > 0 ? ['--', ...assets] : []
-  const result = exec('gh', ['release', 'create', tag, '--generate-notes', '--verify-tag', ...assetArgs])
+  const result = exec('gh', ['release', 'create', tag, '--generate-notes', '--verify-tag', ...latestArgs, ...assetArgs])
   return result.stdout.trim()
 }
 
@@ -476,8 +502,14 @@ function failureNextStep(error) {
   if (/asset .*does not exist/i.test(message)) {
     return 'Check that a build step creates the asset before dispatch runs and that the path is relative to the checkout root.'
   }
+  if (/asset pattern .*matched no files/i.test(message)) {
+    return 'Check that the glob pattern is correct and that a build step creates matching files before dispatch runs.'
+  }
   if (/asset .*workspace|asset .*regular file|asset pattern .*workspace/i.test(message)) {
     return ASSET_HELP
+  }
+  if (/assets were requested/i.test(message)) {
+    return 'Use a new release tag for new immutable assets, or rerun without assets if the existing release is intentional.'
   }
   if (/(release-tag|major-tag|minor-tag).*?(tag name|must not|not allowed|required)/i.test(message)) {
     return TAG_HELP
@@ -556,13 +588,13 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
       releaseUrl = existing.url
       process.stdout.write(`release ${inputs.releaseTag} already exists; reusing it\n`)
       if (inputs.assets.length > 0) {
-        writeWarning(
-          `assets were specified, but release ${inputs.releaseTag} already exists; existing releases are reused without uploading assets.`,
+        throw new Error(
+          `release ${inputs.releaseTag} already exists, but assets were requested. Dispatch does not upload assets to an existing release because immutable releases cannot be repaired after publish.`,
         )
       }
     } else {
       const assets = resolveAssets(inputs.assets, cwd)
-      releaseUrl = createRelease(exec, inputs.releaseTag, assets)
+      releaseUrl = createRelease(exec, inputs.releaseTag, assets, inputs)
       releaseCreated = true
       assetsUploaded = assets.length
     }
@@ -600,7 +632,9 @@ module.exports = {
   localTagTargetObjectId,
   parseAssets,
   parseBool,
+  parseMakeLatest,
   releaseView,
+  releaseCreateLatestArgs,
   remoteTagObjectId,
   resolveAssets,
   runRelease,

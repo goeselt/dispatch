@@ -9,6 +9,7 @@ const {
   escapeWorkflowCommand,
   parseAssets,
   parseBool,
+  parseMakeLatest,
   runRelease,
 } = require('./release.js')
 
@@ -67,6 +68,7 @@ try {
     createTag: parseBool(input('CREATE-TAG', 'true'), 'create-tag'),
     createRelease: parseBool(input('CREATE-RELEASE', 'true'), 'create-release'),
     allowNonDefaultBranch: parseBool(input('ALLOW-NON-DEFAULT-BRANCH', 'false'), 'allow-non-default-branch'),
+    makeLatest: parseMakeLatest(input('MAKE-LATEST', 'default-branch')),
     signingKey: input('SIGNING-KEY'),
     assets: parseAssets(input('ASSETS')),
     majorTag: input('MAJOR-TAG'),
