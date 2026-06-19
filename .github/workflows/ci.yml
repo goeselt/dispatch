@@ -3,7 +3,6 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -17,23 +16,8 @@ defaults:
     shell: bash
 
 jobs:
-  intent:
-    name: Intent
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - name: Validate Intent
-        uses: goeselt/intent@c524346424a2bbbb5cb1e399fb1f086236935df2 # v1.1.1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pr-comment: true
-
   ci:
     name: CI
-    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
