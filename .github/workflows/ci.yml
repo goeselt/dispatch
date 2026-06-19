@@ -17,20 +17,29 @@ defaults:
     shell: bash
 
 jobs:
+  intent:
+    name: Intent
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Validate Intent
+        uses: goeselt/intent@c524346424a2bbbb5cb1e399fb1f086236935df2 # v1.1.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-comment: true
+
   ci:
     name: CI
+    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - name: Validate Intent
-        uses: goeselt/intent@21b70d0a25a0aae8002ca2c7fb4f4b3ba604922e # v1.1.2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pr-comment: true
-
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -41,4 +50,21 @@ jobs:
         run: npm test
 
       - name: Pedant
-        uses: goeselt/pedant@b729ab0c66a689f536bf12bf3c71dd1932b22abe # v1.2.1
+        id: pedant
+        continue-on-error: true
+        uses: goeselt/pedant@a62f5beea373a55846791c2113ceacd07f114826 # v1.2.2
+        with:
+          summary-github-step: true
+
+      - name: Publish Pedant Report
+        if: always()
+        uses: goeselt/remark@b5a3f7c0d7b25e6634f1f2f9ef13e6b808370972 # v1.0.3
+        with:
+          body: ${{ steps.pedant.outputs.summary }}
+          comment-key: pedant
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          skip-unchanged: true
+
+      - name: Fail On Pedant Findings
+        if: steps.pedant.outcome != 'success'
+        run: exit 1
