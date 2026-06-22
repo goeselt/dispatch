@@ -5,7 +5,9 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { apiBaseUrl, createClient, makeLatestField, repoPath } = require('./github-api.js')
+const { apiBaseUrl, createClient, makeLatestField, repoPath, request, retryDelayMs } = require('./github-api.js')
+
+const noSleep = () => Promise.resolve()
 
 // fakeResponse mimics the subset of the fetch Response interface that github-api.js consumes.
 function fakeResponse({ status = 200, body = '', json = true } = {}) {
@@ -148,9 +150,12 @@ test('getReleaseByTag returns the release on 200 and absence on 404', async () =
 test('getReleaseByTag does not swallow non-404 failures', async () => {
   await withApiUrl('https://api.github.com', () =>
     withFetch(
-      () => fakeResponse({ status: 500, body: { message: 'boom' } }),
+      () => fakeResponse({ status: 403, body: { message: 'Forbidden' } }),
       async () => {
-        await assert.rejects(createClient('secret').getReleaseByTag('owner/name', 'v1.2.3'), /HTTP 500/)
+        await assert.rejects(
+          createClient('secret', { sleep: noSleep }).getReleaseByTag('owner/name', 'v1.2.3'),
+          /HTTP 403/,
+        )
       },
     ),
   )
@@ -221,4 +226,104 @@ test('createRelease with assets drafts, uploads, then publishes', async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// Transient-failure hardening
+
+test('request sends an identifying User-Agent, which GitHub requires', async () => {
+  await withFetch(
+    () => fakeResponse({ status: 200, body: {} }),
+    async (calls) => {
+      await request('tok', 'GET', 'https://api.example/x')
+      assert.equal(calls[0].options.headers['User-Agent'], 'goeselt-dispatch')
+    },
+  )
+})
+
+test('request retries a retryable status and then succeeds', async () => {
+  await withFetch(
+    (url, options, i) => (i < 2 ? fakeResponse({ status: 503 }) : fakeResponse({ status: 200, body: { ok: true } })),
+    async (calls) => {
+      const res = await request('tok', 'GET', 'https://api.example/x', { sleep: noSleep })
+      assert.deepEqual(res.body, { ok: true })
+      assert.equal(calls.length, 3)
+    },
+  )
+})
+
+test('request stops after maxAttempts and surfaces the last failure', async () => {
+  await withFetch(
+    () => fakeResponse({ status: 500, body: { message: 'boom' } }),
+    async (calls) => {
+      await assert.rejects(request('tok', 'GET', 'https://api.example/x', { sleep: noSleep }), /HTTP 500 boom/)
+      assert.equal(calls.length, 4)
+    },
+  )
+})
+
+test('request retries an idempotent method after a network error', async () => {
+  await withFetch(
+    (url, options, i) => {
+      if (i === 0) throw new Error('ECONNRESET')
+      return fakeResponse({ status: 200, body: { ok: true } })
+    },
+    async (calls) => {
+      const res = await request('tok', 'GET', 'https://api.example/x', { sleep: noSleep })
+      assert.deepEqual(res.body, { ok: true })
+      assert.equal(calls.length, 2)
+    },
+  )
+})
+
+test('request does not retry a POST after a network error, to avoid duplicate writes', async () => {
+  await withFetch(
+    () => {
+      throw new Error('ECONNRESET')
+    },
+    async (calls) => {
+      await assert.rejects(request('tok', 'POST', 'https://api.example/x', { sleep: noSleep }), /ECONNRESET/)
+      assert.equal(calls.length, 1)
+    },
+  )
+})
+
+test('request honors a Retry-After header as the minimum backoff and retries a 403 secondary-rate limit', async () => {
+  const delays = []
+  const recordingSleep = (ms) => {
+    delays.push(ms)
+    return Promise.resolve()
+  }
+  await withFetch(
+    (url, options, i) =>
+      i === 0
+        ? {
+            ok: false,
+            status: 403,
+            headers: { get: (name) => (name.toLowerCase() === 'retry-after' ? '7' : null) },
+            text: () => Promise.resolve(''),
+          }
+        : fakeResponse({ status: 200, body: { ok: true } }),
+    async (calls) => {
+      const res = await request('tok', 'GET', 'https://api.example/x', { sleep: recordingSleep })
+      assert.deepEqual(res.body, { ok: true })
+      assert.equal(calls.length, 2)
+      assert.ok(delays[0] >= 7000, `expected the Retry-After floor of 7000ms, got ${delays[0]}`)
+    },
+  )
+})
+
+test('request does not retry a plain 403 without Retry-After', async () => {
+  await withFetch(
+    () => fakeResponse({ status: 403, body: { message: 'Forbidden' } }),
+    async (calls) => {
+      await assert.rejects(request('tok', 'GET', 'https://api.example/x', { sleep: noSleep }), /HTTP 403/)
+      assert.equal(calls.length, 1)
+    },
+  )
+})
+
+test('retryDelayMs grows with attempts and respects the Retry-After floor', () => {
+  assert.ok(retryDelayMs(1, null) >= 500)
+  assert.ok(retryDelayMs(3, null) >= retryDelayMs(1, null))
+  assert.ok(retryDelayMs(1, '30') >= 30000)
 })

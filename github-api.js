@@ -16,6 +16,35 @@ const { branchNameFromRef, hasReleaseContext } = require('./release-context.js')
 
 const ASSET_CONTENT_TYPE = 'application/octet-stream'
 
+// GitHub rejects API requests without a User-Agent header (HTTP 403); Node's global fetch does not send an identifying
+// one. GitHub recommends the application name. https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api
+const USER_AGENT = 'goeselt-dispatch'
+
+// Transient-failure handling. Release actions are network-heavy and reruns are expensive, so we retry transient
+// failures with exponential backoff, mirroring the retry/throttling plugins that established release actions rely on.
+const DEFAULT_TIMEOUT_MS = 60_000
+const DEFAULT_MAX_ATTEMPTS = 4
+const RETRY_BASE_MS = 500
+// Statuses that mean the request was not applied, so retrying is safe for any method.
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
+// Methods whose retry is safe after an ambiguous network failure. POST is excluded: a dropped connection might have
+// created a release or asset server-side, and a blind retry would duplicate it.
+const RETRYABLE_NETWORK_METHODS = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'PATCH'])
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// retryDelayMs computes exponential backoff with jitter and never waits less than a Retry-After header (seconds) the
+// server supplied (used by GitHub for rate and secondary-rate limits).
+function retryDelayMs(attempt, retryAfterHeader) {
+  const retryAfter = Number.parseInt(retryAfterHeader ?? '', 10)
+  const headerMs = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 0
+  const backoff = RETRY_BASE_MS * 2 ** (attempt - 1)
+  const jitter = Math.floor(Math.random() * RETRY_BASE_MS)
+  return Math.max(headerMs, backoff + jitter)
+}
+
 // apiBaseUrl returns the REST API base for the active GitHub host without a trailing slash.
 // It fails closed when GITHUB_API_URL is missing rather than defaulting to api.github.com: every request carries the
 // token in an Authorization header, and silently falling back to the public host would transmit an Enterprise token to
@@ -43,31 +72,69 @@ function repoPath(repo) {
 // request issues an authenticated REST call. It returns { status, body } where body is parsed JSON when the response
 // carries a JSON content type, otherwise the raw text. A non-2xx status throws unless it is listed in allowStatuses,
 // so callers can treat an expected 404 (no release for a tag) as data rather than an error.
-async function request(token, method, url, { body, headers, allowStatuses = [] } = {}) {
-  const res = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...headers,
-    },
+//
+// Transient failures (retryable HTTP statuses for any method, plus network/timeout failures for idempotent methods) are
+// retried up to maxAttempts with exponential backoff. timeoutMs aborts a stalled request so the retry can take over;
+// pass 0 to disable it for long-running transfers such as asset uploads.
+async function request(token, method, url, options = {}) {
+  const {
     body,
-  })
-  const text = await res.text()
-  let parsed = text
-  if (text && (res.headers.get('content-type') || '').includes('application/json')) {
+    headers,
+    allowStatuses = [],
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    maxAttempts = DEFAULT_MAX_ATTEMPTS,
+    sleep = defaultSleep,
+  } = options
+
+  for (let attempt = 1; ; attempt++) {
+    let res
     try {
-      parsed = JSON.parse(text)
-    } catch {
-      parsed = text
+      const init = {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': USER_AGENT,
+          ...headers,
+        },
+        body,
+      }
+      if (timeoutMs > 0) init.signal = AbortSignal.timeout(timeoutMs)
+      res = await fetch(url, init)
+    } catch (err) {
+      // Network failure or timeout before any response. Retrying is only safe for idempotent methods; a POST might have
+      // been applied server-side, so it fails fast to avoid a duplicate release or asset.
+      if (RETRYABLE_NETWORK_METHODS.has(method) && attempt < maxAttempts) {
+        await sleep(retryDelayMs(attempt, null))
+        continue
+      }
+      throw new Error(`${method} ${url}: ${err.message}`, { cause: err })
     }
+
+    const text = await res.text()
+    let parsed = text
+    if (text && (res.headers.get('content-type') || '').includes('application/json')) {
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        parsed = text
+      }
+    }
+
+    if (!res.ok && !allowStatuses.includes(res.status)) {
+      // A Retry-After header (rate or secondary-rate limit, even on a 403) marks an otherwise non-retryable status as
+      // retryable and sets the minimum wait.
+      const retryAfter = res.headers.get('retry-after')
+      const retryable = RETRYABLE_STATUSES.has(res.status) || retryAfter != null
+      if (retryable && attempt < maxAttempts) {
+        await sleep(retryDelayMs(attempt, retryAfter))
+        continue
+      }
+      const detail = parsed && parsed.message ? parsed.message : typeof parsed === 'string' ? parsed.trim() : ''
+      throw new Error(`${method} ${url}: HTTP ${res.status}${detail ? ` ${detail}` : ''}`)
+    }
+    return { status: res.status, body: parsed }
   }
-  if (!res.ok && !allowStatuses.includes(res.status)) {
-    const detail = parsed && parsed.message ? parsed.message : typeof parsed === 'string' ? parsed.trim() : ''
-    throw new Error(`${method} ${url}: HTTP ${res.status}${detail ? ` ${detail}` : ''}`)
-  }
-  return { status: res.status, body: parsed }
 }
 
 // makeLatestField maps the action's make-latest policy to the REST `make_latest` enum, returning null to omit the
@@ -91,34 +158,39 @@ function makeLatestField(options = {}) {
   return 'false'
 }
 
-// uploadAsset uploads a single file to a release. assetPath must be absolute (callers resolve it against the workspace
-// that validated it, so the read base matches the validation base). upload_url is an RFC 6570 template such as
-// "https://uploads.<host>/.../assets{?name,label}"; GitHub returns it already pointing at the correct uploads host, so
-// we only strip the template suffix and append the file name. The body is the raw file bytes.
-async function uploadAsset(token, uploadUrl, assetPath) {
-  const base = uploadUrl.replace(/\{[^}]*\}$/, '')
-  const name = path.basename(assetPath)
-  const data = fs.readFileSync(assetPath)
-  await request(token, 'POST', `${base}?name=${encodeURIComponent(name)}`, {
-    headers: { 'Content-Type': ASSET_CONTENT_TYPE },
-    body: data,
-  })
-}
-
 // createClient binds a token to the release operations. Methods take the repository as "owner/name" because the REST
 // API has no remote-inference fallback the way gh did. The token is only validated when a method is actually called,
 // so a create-release:false run (which performs no API calls) does not require one.
-function createClient(token) {
+// requestOptions (retry/timeout/sleep) are forwarded to every request, which keeps the retry policy injectable for
+// tests.
+function createClient(token, requestOptions = {}) {
+  const call = (method, url, opts = {}) => request(token, method, url, { ...requestOptions, ...opts })
+
+  // uploadAsset uploads a single file to a release. assetPath must be absolute (callers resolve it against the
+  // workspace that validated it, so the read base matches the validation base). upload_url is an RFC 6570 template such
+  // as "https://uploads.<host>/.../assets{?name,label}"; GitHub returns it already pointing at the correct uploads
+  // host, so we only strip the template suffix and append the file name. The body is the raw file bytes. The per-request
+  // timeout is disabled because a large asset can legitimately take longer than a control-plane call.
+  async function uploadAsset(uploadUrl, assetPath) {
+    const base = uploadUrl.replace(/\{[^}]*\}$/, '')
+    const name = path.basename(assetPath)
+    const data = fs.readFileSync(assetPath)
+    await call('POST', `${base}?name=${encodeURIComponent(name)}`, {
+      headers: { 'Content-Type': ASSET_CONTENT_TYPE },
+      body: data,
+      timeoutMs: 0,
+    })
+  }
+
   // checkAuth verifies the token can read the repository, failing fast before any tag is pushed.
   async function checkAuth(repo) {
-    await request(token, 'GET', `${apiBaseUrl()}/repos/${repoPath(repo)}`)
+    await call('GET', `${apiBaseUrl()}/repos/${repoPath(repo)}`)
   }
 
   // getReleaseByTag returns { exists, url, isDraft }. A 404 means no release is attached to the tag and must not be
   // confused with an auth or network failure, which would let the action recreate an existing release.
   async function getReleaseByTag(repo, tag) {
-    const { status, body } = await request(
-      token,
+    const { status, body } = await call(
       'GET',
       `${apiBaseUrl()}/repos/${repoPath(repo)}/releases/tags/${encodeURIComponent(tag)}`,
       { allowStatuses: [404] },
@@ -137,18 +209,18 @@ function createClient(token) {
     const latest = makeLatestField(options)
     if (latest) payload.make_latest = latest
 
-    const created = await request(token, 'POST', `${base}/releases`, {
+    const created = await call('POST', `${base}/releases`, {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
     const release = created.body
 
     for (const asset of assets) {
-      await uploadAsset(token, release.upload_url, asset)
+      await uploadAsset(release.upload_url, asset)
     }
 
     if (draft) {
-      const published = await request(token, 'PATCH', `${base}/releases/${release.id}`, {
+      const published = await call('PATCH', `${base}/releases/${release.id}`, {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ draft: false }),
       })
@@ -166,5 +238,5 @@ module.exports = {
   makeLatestField,
   repoPath,
   request,
-  uploadAsset,
+  retryDelayMs,
 }
