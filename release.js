@@ -115,8 +115,7 @@ function configureGitUser(exec, name, email) {
 }
 
 function checkReleaseAuth(exec, repo = '') {
-  exec('gh', ['auth', 'status'])
-  if (repo) exec('gh', ['repo', 'view', repo, '--json', 'nameWithOwner'])
+  exec('gh', ['repo', 'view', ...(repo ? [repo] : []), '--json', 'nameWithOwner'])
 }
 
 function ghRepoArgs(repo = '') {

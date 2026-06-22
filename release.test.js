@@ -77,13 +77,12 @@ function releaseContext(overrides = {}) {
 test('checkReleaseAuth verifies gh authentication', () => {
   const exec = makeExec()
   checkReleaseAuth(exec)
-  assert.ok(exec.called('gh', 'auth', 'status'))
+  assert.ok(exec.called('gh', 'repo', 'view', '--json', 'nameWithOwner'))
 })
 
 test('checkReleaseAuth verifies the target repository when known', () => {
   const exec = makeExec()
   checkReleaseAuth(exec, 'goeselt/dispatch')
-  assert.ok(exec.called('gh', 'auth', 'status'))
   assert.ok(exec.called('gh', 'repo', 'view', 'goeselt/dispatch', '--json', 'nameWithOwner'))
 })
 
@@ -401,7 +400,7 @@ test('runRelease uses github-token for gh and git tag operations', () => {
 
   runRelease(inputs({ githubToken: 'secret-token' }), exec)
 
-  const ghOptions = exec.optionsFor('gh', 'auth', 'status')
+  const ghOptions = exec.optionsFor('gh', 'repo', 'view', '--json', 'nameWithOwner')
   const lsRemoteOptions = exec.optionsFor('git', 'ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v1.2.3')
   const pushOptions = exec.optionsFor('git', 'push', '--no-verify', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3')
 
@@ -434,19 +433,19 @@ test('runRelease checks release auth before creating a tag', () => {
 
   runRelease(inputs(), exec)
 
-  const authIdx = exec.calls.findIndex((c) => c[0] === 'gh' && c[1] === 'auth' && c[2] === 'status')
+  const authIdx = exec.calls.findIndex((c) => c[0] === 'gh' && c[1] === 'repo' && c[2] === 'view')
   const tagIdx = exec.calls.findIndex((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-a')
-  assert.ok(authIdx !== -1, 'gh auth status was not called')
+  assert.ok(authIdx !== -1, 'gh repo view was not called')
   assert.ok(tagIdx !== -1, 'release tag was not created')
   assert.ok(authIdx < tagIdx, 'release auth must be checked before creating a tag')
 })
 
 test('runRelease fails before creating a tag when release auth fails', () => {
   const exec = makeExec({
-    'gh\x00auth\x00status': { status: 1, stderr: 'not logged in' },
+    'gh\x00repo\x00view\x00--json\x00nameWithOwner': { status: 1, stderr: 'HTTP 401: bad credentials' },
   })
 
-  assert.throws(() => runRelease(inputs(), exec), /not logged in/)
+  assert.throws(() => runRelease(inputs(), exec), /bad credentials/)
   assert.equal(
     exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag'),
     false,
