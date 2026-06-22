@@ -6,27 +6,26 @@ const path = require('node:path')
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
-  checkReleaseAuth,
-  createRelease,
   createTag,
   fetchTag,
   guardReleaseContext,
   guardReleaseHead,
-  isMissingReleaseError,
   parseAssets,
   parseBool,
   parseMakeLatest,
-  releaseCreateLatestArgs,
   runRelease,
 } = require('./release.js')
 
-function makeExec(responses = {}) {
+// makeExec mocks the synchronous git/gpg runner. When a shared trace array is passed, calls are appended to it so
+// ordering can be asserted across exec (git) and api (REST) operations.
+function makeExec(responses = {}, trace = null) {
   const calls = []
   const optionsByCall = []
   const exec = (name, args, options = {}) => {
     const call = [name, ...args]
     calls.push(call)
     optionsByCall.push({ call, options })
+    if (trace) trace.push(['exec', ...call])
     const key = [name, ...args].join('\x00')
     const response = responses[key] ?? { status: 0, stdout: '', stderr: '' }
     if (response.status && !options.allowFailure) {
@@ -39,6 +38,39 @@ function makeExec(responses = {}) {
   exec.optionsFor = (...parts) =>
     optionsByCall.find((entry) => entry.call.join('\x00') === parts.join('\x00'))?.options || {}
   return exec
+}
+
+// makeApi mocks the GitHub REST client injected into runRelease. Overrides let a test program a return value or throw.
+function makeApi(overrides = {}, trace = null) {
+  const calls = []
+  const record = (entry) => {
+    calls.push(entry)
+    if (trace) trace.push(['api', ...entry])
+  }
+  const api = {
+    checkAuth: (repo) => {
+      record(['checkAuth', repo])
+      return Promise.resolve(overrides.checkAuth ? overrides.checkAuth(repo) : undefined)
+    },
+    getReleaseByTag: (repo, tag) => {
+      record(['getReleaseByTag', repo, tag])
+      return Promise.resolve(
+        overrides.getReleaseByTag ? overrides.getReleaseByTag(repo, tag) : { exists: false, url: '' },
+      )
+    },
+    createRelease: (repo, tag, assets, options) => {
+      record(['createRelease', repo, tag, assets, options])
+      return Promise.resolve(
+        overrides.createRelease
+          ? overrides.createRelease(repo, tag, assets, options)
+          : `https://github.com/org/repo/releases/tag/${tag}`,
+      )
+    },
+  }
+  api.calls = calls
+  api.called = (method) => calls.some((entry) => entry[0] === method)
+  api.callFor = (method) => calls.find((entry) => entry[0] === method)
+  return api
 }
 
 function inputs(overrides = {}) {
@@ -72,19 +104,7 @@ function releaseContext(overrides = {}) {
   }
 }
 
-// Git/GitHub command wrappers
-
-test('checkReleaseAuth verifies gh authentication', () => {
-  const exec = makeExec()
-  checkReleaseAuth(exec)
-  assert.ok(exec.called('gh', 'repo', 'view', '--json', 'nameWithOwner'))
-})
-
-test('checkReleaseAuth verifies the target repository when known', () => {
-  const exec = makeExec()
-  checkReleaseAuth(exec, 'goeselt/dispatch')
-  assert.ok(exec.called('gh', 'repo', 'view', 'goeselt/dispatch', '--json', 'nameWithOwner'))
-})
+// Git command wrappers
 
 test('fetchTag refreshes the release tag from origin', () => {
   const exec = makeExec()
@@ -105,28 +125,18 @@ test('createTag deletes a local tag when pushing it fails', () => {
   assert.equal(exec.called('git', 'tag', '-d', 'v1.2.3'), true)
 })
 
-test('isMissingReleaseError recognizes only missing release responses', () => {
-  assert.equal(isMissingReleaseError('release not found'), true)
-  assert.equal(isMissingReleaseError('HTTP 404: Not Found'), true)
-  assert.equal(isMissingReleaseError('HTTP 401: Bad credentials'), false)
-})
-
 // Release setup orchestration
 
-test('runRelease signs tags when signing-key is provided', () => {
+test('runRelease signs tags when signing-key is provided', async () => {
   const previousGnupgHome = process.env.GNUPGHOME
   const exec = makeExec({
     'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
       stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
     },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
   })
 
-  runRelease(inputs({ signingKey: Buffer.from('fake-gpg-key').toString('base64') }), exec)
+  await runRelease(inputs({ signingKey: Buffer.from('fake-gpg-key').toString('base64') }), exec, makeApi())
 
   assert.ok(exec.called('gpg', '--import', '--batch'), 'GPG key not imported')
   assert.ok(exec.called('git', 'config', 'user.signingkey', 'ABCDEF1234567890'), 'signing key not pinned')
@@ -134,16 +144,12 @@ test('runRelease signs tags when signing-key is provided', () => {
   assert.equal(process.env.GNUPGHOME, previousGnupgHome)
 })
 
-test('runRelease does not configure GPG when no signing-key is given', () => {
+test('runRelease does not configure GPG when no signing-key is given', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
   })
 
-  runRelease(inputs(), exec)
+  await runRelease(inputs(), exec, makeApi())
 
   assert.equal(
     exec.calls.some((c) => c[0] === 'gpg'),
@@ -172,10 +178,13 @@ test('parseAssets trims newline-separated assets', () => {
   assert.deepEqual(parseAssets('dist/a.zip\n\n dist/b.tgz \n'), ['dist/a.zip', 'dist/b.tgz'])
 })
 
-test('runRelease rejects unsafe release tags before command execution', () => {
+test('runRelease rejects unsafe release tags before command execution', async () => {
   const exec = makeExec()
 
-  assert.throws(() => runRelease(inputs({ releaseTag: '--mirror' }), exec), /release-tag must not start with -/)
+  await assert.rejects(
+    runRelease(inputs({ releaseTag: '--mirror' }), exec, makeApi()),
+    /release-tag must not start with -/,
+  )
   assert.deepEqual(exec.calls, [])
 })
 
@@ -258,11 +267,11 @@ test('guardReleaseContext blocks GitHub contexts without a default branch', () =
   )
 })
 
-test('runRelease checks release context before command execution', () => {
+test('runRelease checks release context before command execution', async () => {
   const exec = makeExec()
 
-  assert.throws(
-    () => runRelease(inputs({ releaseContext: releaseContext({ eventName: 'pull_request' }) }), exec),
+  await assert.rejects(
+    runRelease(inputs({ releaseContext: releaseContext({ eventName: 'pull_request' }) }), exec, makeApi()),
     /pull request events/,
   )
   assert.deepEqual(exec.calls, [])
@@ -301,113 +310,37 @@ test('guardReleaseHead rejects a checkout that is unrelated to the GitHub event 
   )
 })
 
-test('createRelease separates asset names from gh flags', () => {
-  const exec = makeExec({
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--\x00--repo\x00owner/repo': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
-  })
-
-  const url = createRelease(exec, 'v1.2.3', ['--repo', 'owner/repo'])
-
-  assert.equal(url, 'https://github.com/org/repo/releases/tag/v1.2.3')
-  assert.equal(
-    exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--', '--repo', 'owner/repo'),
-    true,
-  )
-})
-
-test('releaseCreateLatestArgs keeps latest automatic on default-branch releases', () => {
-  assert.deepEqual(releaseCreateLatestArgs(inputs({ releaseContext: releaseContext() })), [])
-})
-
-test('releaseCreateLatestArgs disables latest for non-default branch releases by default', () => {
-  assert.deepEqual(
-    releaseCreateLatestArgs(
-      inputs({
-        allowNonDefaultBranch: true,
-        releaseContext: releaseContext({
-          ref: 'refs/heads/1.x',
-          refName: '1.x',
-        }),
-      }),
-    ),
-    ['--latest=false'],
-  )
-})
-
-test('createRelease passes explicit latest policy to gh', () => {
-  const exec = makeExec({
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--latest=false': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
-  })
-
-  const url = createRelease(exec, 'v1.2.3', [], inputs({ makeLatest: 'false' }))
-
-  assert.equal(url, 'https://github.com/org/repo/releases/tag/v1.2.3')
-  assert.equal(
-    exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--latest=false'),
-    true,
-  )
-})
-
-test('createRelease binds gh to the GitHub event repository when available', () => {
-  const exec = makeExec({
-    'gh\x00release\x00create\x00v1.2.3\x00--repo\x00goeselt/dispatch\x00--generate-notes\x00--verify-tag': {
-      stdout: 'https://github.com/goeselt/dispatch/releases/tag/v1.2.3\n',
-    },
-  })
-
-  const url = createRelease(exec, 'v1.2.3', [], inputs({ releaseContext: { repository: 'goeselt/dispatch' } }))
-
-  assert.equal(url, 'https://github.com/goeselt/dispatch/releases/tag/v1.2.3')
-  assert.equal(
-    exec.called('gh', 'release', 'create', 'v1.2.3', '--repo', 'goeselt/dispatch', '--generate-notes', '--verify-tag'),
-    true,
-  )
-})
-
 // Release orchestration
 
-test('runRelease creates tag and release', () => {
+test('runRelease creates tag and release', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
   })
+  const api = makeApi()
 
-  const result = runRelease(inputs(), exec)
+  const result = await runRelease(inputs(), exec, api)
 
   assert.equal(result.tagCreated, true)
   assert.equal(result.releaseCreated, true)
   assert.equal(result.releaseUrl, 'https://github.com/org/repo/releases/tag/v1.2.3')
   assert.equal(exec.called('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3'), true)
   assert.equal(exec.called('git', 'push', '--no-verify', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3'), true)
-  assert.equal(exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag'), true)
+  assert.equal(api.called('createRelease'), true)
 })
 
-test('runRelease uses github-token for gh and git tag operations', () => {
+test('runRelease uses github-token for git tag operations', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
   })
 
-  runRelease(inputs({ githubToken: 'secret-token' }), exec)
+  await runRelease(inputs({ githubToken: 'secret-token' }), exec, makeApi())
 
-  const ghOptions = exec.optionsFor('gh', 'repo', 'view', '--json', 'nameWithOwner')
   const lsRemoteOptions = exec.optionsFor('git', 'ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v1.2.3')
   const pushOptions = exec.optionsFor('git', 'push', '--no-verify', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3')
 
   const hasAuthHeader = (env) =>
     Object.values(env || {}).some((value) => String(value).startsWith('Authorization: Basic '))
 
-  assert.equal(ghOptions.env.GH_TOKEN, 'secret-token')
   assert.equal(hasAuthHeader(lsRemoteOptions.env), true)
   assert.equal(hasAuthHeader(pushOptions.env), true)
   assert.equal(exec.optionsFor('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3').env, undefined)
@@ -422,74 +355,86 @@ test('runRelease uses github-token for gh and git tag operations', () => {
   )
 })
 
-test('runRelease checks release auth before creating a tag', () => {
-  const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
+test('runRelease checks release auth before creating a tag', async () => {
+  const trace = []
+  const exec = makeExec(
+    {
+      'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     },
-  })
+    trace,
+  )
+  const api = makeApi({}, trace)
 
-  runRelease(inputs(), exec)
+  await runRelease(inputs(), exec, api)
 
-  const authIdx = exec.calls.findIndex((c) => c[0] === 'gh' && c[1] === 'repo' && c[2] === 'view')
-  const tagIdx = exec.calls.findIndex((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-a')
-  assert.ok(authIdx !== -1, 'gh repo view was not called')
+  const authIdx = trace.findIndex((e) => e[0] === 'api' && e[1] === 'checkAuth')
+  const tagIdx = trace.findIndex((e) => e[0] === 'exec' && e[1] === 'git' && e[2] === 'tag' && e[3] === '-a')
+  assert.ok(authIdx !== -1, 'checkAuth was not called')
   assert.ok(tagIdx !== -1, 'release tag was not created')
   assert.ok(authIdx < tagIdx, 'release auth must be checked before creating a tag')
 })
 
-test('runRelease fails before creating a tag when release auth fails', () => {
-  const exec = makeExec({
-    'gh\x00repo\x00view\x00--json\x00nameWithOwner': { status: 1, stderr: 'HTTP 401: bad credentials' },
-  })
-
-  assert.throws(() => runRelease(inputs(), exec), /bad credentials/)
-  assert.equal(
-    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag'),
-    false,
-  )
-})
-
-test('runRelease verifies target repository access before creating a tag', () => {
-  const exec = makeExec({
-    'gh\x00repo\x00view\x00goeselt/dispatch\x00--json\x00nameWithOwner': { status: 1, stderr: 'HTTP 403' },
-  })
-
-  assert.throws(() => runRelease(inputs({ releaseContext: { repository: 'goeselt/dispatch' } }), exec), /HTTP 403/)
-  assert.equal(
-    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag'),
-    false,
-  )
-})
-
-test('runRelease reuses existing tag and release', () => {
-  const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
-      stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
+test('runRelease fails before creating a tag when release auth fails', async () => {
+  const exec = makeExec()
+  const api = makeApi({
+    checkAuth: () => {
+      throw new Error('GET .../repos/org/repo: HTTP 401 Must authenticate to access this API.')
     },
   })
 
-  const result = runRelease(inputs(), exec)
+  await assert.rejects(runRelease(inputs(), exec, api), /Must authenticate/)
+  assert.equal(
+    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag'),
+    false,
+  )
+})
+
+test('runRelease verifies target repository access before creating a tag', async () => {
+  const exec = makeExec()
+  const api = makeApi({
+    checkAuth: () => {
+      throw new Error('GET .../repos/goeselt/dispatch: HTTP 403')
+    },
+  })
+
+  await assert.rejects(
+    runRelease(inputs({ releaseContext: { repository: 'goeselt/dispatch' } }), exec, api),
+    /HTTP 403/,
+  )
+  assert.deepEqual(api.callFor('checkAuth'), ['checkAuth', 'goeselt/dispatch'])
+  assert.equal(
+    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag'),
+    false,
+  )
+})
+
+test('runRelease reuses existing tag and release', async () => {
+  const exec = makeExec({
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
+  })
+  const api = makeApi({
+    getReleaseByTag: () => ({ exists: true, url: 'https://github.com/org/repo/releases/tag/v1.2.3', isDraft: false }),
+  })
+
+  const result = await runRelease(inputs(), exec, api)
 
   assert.equal(result.tagCreated, false)
   assert.equal(result.releaseCreated, false)
   assert.equal(result.releaseUrl, 'https://github.com/org/repo/releases/tag/v1.2.3')
   assert.equal(exec.called('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3'), false)
   assert.equal(exec.called('git', 'fetch', '--force', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3'), true)
+  assert.equal(api.called('createRelease'), false)
 })
 
-test('runRelease fetches an existing release tag before updating floating tags', () => {
+test('runRelease fetches an existing release tag before updating floating tags', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
-      stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
-    },
+  })
+  const api = makeApi({
+    getReleaseByTag: () => ({ exists: true, url: 'https://github.com/org/repo/releases/tag/v1.2.3', isDraft: false }),
   })
 
-  runRelease(inputs({ majorTag: 'v1' }), exec)
+  await runRelease(inputs({ majorTag: 'v1' }), exec, api)
 
   const fetchIdx = exec.calls.findIndex((c) => c[0] === 'git' && c[1] === 'fetch')
   const floatingIdx = exec.calls.findIndex((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-fa')
@@ -498,24 +443,22 @@ test('runRelease fetches an existing release tag before updating floating tags',
   assert.ok(fetchIdx < floatingIdx, 'release tag must be fetched before updating floating tags')
 })
 
-test('runRelease rejects an existing release tag that points at a different commit', () => {
+test('runRelease rejects an existing release tag that points at a different commit', async () => {
   const exec = makeExec({
     'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'def456\trefs/tags/v1.2.3\n' },
     'git\x00rev-parse\x00v1.2.3^{}': { stdout: 'def456\n' },
   })
+  const api = makeApi()
 
-  assert.throws(
-    () => runRelease(inputs({ releaseContext: releaseContext({ sha: 'abc123' }) }), exec),
+  await assert.rejects(
+    runRelease(inputs({ releaseContext: releaseContext({ sha: 'abc123' }) }), exec, api),
     /release tag v1.2.3 points to def456/,
   )
-  assert.equal(
-    exec.calls.some((c) => c[0] === 'gh' && c[1] === 'release'),
-    false,
-  )
+  assert.equal(api.called('createRelease'), false)
 })
 
-test('runRelease verifies a reused signed release tag', () => {
+test('runRelease verifies a reused signed release tag', async () => {
   const exec = makeExec({
     'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
       stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
@@ -523,108 +466,106 @@ test('runRelease verifies a reused signed release tag', () => {
     'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc123\trefs/tags/v1.2.3\n' },
     'git\x00rev-parse\x00v1.2.3^{}': { stdout: 'abc123\n' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
-      stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
-    },
+  })
+  const api = makeApi({
+    getReleaseByTag: () => ({ exists: true, url: 'https://github.com/org/repo/releases/tag/v1.2.3', isDraft: false }),
   })
 
-  runRelease(
+  await runRelease(
     inputs({
       signingKey: Buffer.from('fake-gpg-key').toString('base64'),
       releaseContext: releaseContext({ sha: 'abc123' }),
     }),
     exec,
+    api,
   )
 
   assert.equal(exec.called('git', 'verify-tag', 'v1.2.3'), true)
 })
 
-test('runRelease fails on an existing draft release instead of reusing stale state', () => {
+test('runRelease fails on an existing draft release instead of reusing stale state', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
-      stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":true}\n',
+  })
+  const api = makeApi({
+    getReleaseByTag: () => ({ exists: true, url: 'https://github.com/org/repo/releases/tag/v1.2.3', isDraft: true }),
+  })
+
+  await assert.rejects(runRelease(inputs({ majorTag: 'v1' }), exec, api), /still a draft/)
+  assert.equal(
+    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-fa'),
+    false,
+  )
+})
+
+test('runRelease fails when release lookup fails for a non-404 reason', async () => {
+  const exec = makeExec({
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
+  })
+  const api = makeApi({
+    getReleaseByTag: () => {
+      throw new Error('GET .../releases/tags/v1.2.3: HTTP 401 Bad credentials')
     },
   })
 
-  assert.throws(() => runRelease(inputs({ majorTag: 'v1' }), exec), /still a draft/)
+  await assert.rejects(runRelease(inputs({ majorTag: 'v1' }), exec, api), /HTTP 401/)
+  assert.equal(api.called('createRelease'), false)
   assert.equal(
     exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-fa'),
     false,
   )
 })
 
-test('runRelease fails when release lookup fails for a non-404 reason', () => {
-  const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'HTTP 401: Bad credentials' },
-  })
-
-  assert.throws(() => runRelease(inputs({ majorTag: 'v1' }), exec), /could not check release/)
-  assert.equal(
-    exec.calls.some((c) => c[0] === 'gh' && c[1] === 'release' && c[2] === 'create'),
-    false,
-  )
-  assert.equal(
-    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-fa'),
-    false,
-  )
-})
-
-test('runRelease can create only a tag for GoReleaser', () => {
+test('runRelease can create only a tag for GoReleaser', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
   })
+  const api = makeApi()
 
-  const result = runRelease(inputs({ createRelease: false }), exec)
+  const result = await runRelease(inputs({ createRelease: false }), exec, api)
 
   assert.equal(result.tagCreated, true)
   assert.equal(result.releaseCreated, false)
-  assert.equal(
-    exec.calls.some((call) => call[0] === 'gh'),
-    false,
-  )
+  assert.equal(api.calls.length, 0, 'no GitHub API calls expected when create-release is false')
 })
 
-test('runRelease blocks floating tags when another tool owns the release', () => {
+test('runRelease blocks floating tags when another tool owns the release', async () => {
   const exec = makeExec()
 
-  assert.throws(
-    () => runRelease(inputs({ createRelease: false, majorTag: 'v1' }), exec),
+  await assert.rejects(
+    runRelease(inputs({ createRelease: false, majorTag: 'v1' }), exec, makeApi()),
     /floating tags require create-release/,
   )
   assert.deepEqual(exec.calls, [])
 })
 
-test('runRelease fails when tag is missing and createTag is false', () => {
+test('runRelease fails when tag is missing and createTag is false', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
   })
 
-  assert.throws(() => runRelease(inputs({ createTag: false }), exec), /does not exist/)
+  await assert.rejects(runRelease(inputs({ createTag: false }), exec, makeApi()), /does not exist/)
 })
 
-test('runRelease uploads assets and updates floating tags', () => {
+test('runRelease uploads assets and updates floating tags', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
   fs.mkdirSync(path.join(dir, 'dist'))
   fs.writeFileSync(path.join(dir, 'dist', 'a.zip'), '')
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--\x00dist/a.zip': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
   })
+  const api = makeApi()
 
-  const result = runRelease(inputs({ assets: ['dist/*.zip'], majorTag: 'v1', minorTag: 'v1.2' }), exec, dir)
+  const result = await runRelease(inputs({ assets: ['dist/*.zip'], majorTag: 'v1', minorTag: 'v1.2' }), exec, api, dir)
 
   assert.equal(result.assetsUploaded, 1)
   assert.equal(result.majorTagUpdated, true)
   assert.equal(result.minorTagUpdated, true)
-  assert.equal(
-    exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--', 'dist/a.zip'),
-    true,
-  )
+
+  const createCall = api.callFor('createRelease')
+  assert.ok(createCall, 'createRelease was not called')
+  assert.deepEqual(createCall[3], ['dist/a.zip'])
+
   assert.equal(exec.called('git', 'tag', '-fa', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'), true)
   assert.equal(
     exec.called(
@@ -650,17 +591,14 @@ test('runRelease uploads assets and updates floating tags', () => {
   )
 })
 
-test('runRelease disables latest for intentional non-default branch releases by default', () => {
+test('runRelease passes the non-default branch context through to the release client', async () => {
   const exec = makeExec({
     'git\x00rev-parse\x00HEAD': { stdout: 'abc123\n' },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag\x00--latest=false': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
   })
+  const api = makeApi()
 
-  const result = runRelease(
+  const result = await runRelease(
     inputs({
       allowNonDefaultBranch: true,
       releaseContext: releaseContext({
@@ -669,16 +607,16 @@ test('runRelease disables latest for intentional non-default branch releases by 
       }),
     }),
     exec,
+    api,
   )
 
   assert.equal(result.releaseCreated, true)
-  assert.equal(
-    exec.called('gh', 'release', 'create', 'v1.2.3', '--generate-notes', '--verify-tag', '--latest=false'),
-    true,
-  )
+  const createCall = api.callFor('createRelease')
+  assert.ok(createCall, 'createRelease was not called')
+  assert.equal(createCall[4].releaseContext.refName, '1.x')
 })
 
-test('runRelease warns when assets are specified but create-release is false', () => {
+test('runRelease warns when assets are specified but create-release is false', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
   })
@@ -689,42 +627,39 @@ test('runRelease warns when assets are specified but create-release is false', (
     return true
   }
   try {
-    runRelease(inputs({ createRelease: false, assets: ['dist/*.zip'] }), exec)
+    await runRelease(inputs({ createRelease: false, assets: ['dist/*.zip'] }), exec, makeApi())
   } finally {
     process.stdout.write = origWrite
   }
   assert.ok(written.some((line) => line.includes('::warning') && line.includes('create-release is false')))
 })
 
-test('runRelease updates floating tags after creating the release', () => {
-  const exec = makeExec({
-    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
+test('runRelease updates floating tags after creating the release', async () => {
+  const trace = []
+  const exec = makeExec(
+    {
+      'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     },
-  })
+    trace,
+  )
+  const api = makeApi({}, trace)
 
-  runRelease(inputs({ majorTag: 'v1' }), exec)
+  await runRelease(inputs({ majorTag: 'v1' }), exec, api)
 
-  const releaseIdx = exec.calls.findIndex((c) => c[0] === 'gh' && c[1] === 'release' && c[2] === 'create')
-  const floatingIdx = exec.calls.findIndex((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-fa')
-  assert.ok(releaseIdx !== -1, 'gh release create was not called')
+  const releaseIdx = trace.findIndex((e) => e[0] === 'api' && e[1] === 'createRelease')
+  const floatingIdx = trace.findIndex((e) => e[0] === 'exec' && e[1] === 'git' && e[2] === 'tag' && e[3] === '-fa')
+  assert.ok(releaseIdx !== -1, 'createRelease was not called')
   assert.ok(floatingIdx !== -1, 'git tag -fa was not called')
   assert.ok(releaseIdx < floatingIdx, 'floating tag must be updated after release is created')
 })
 
-test('runRelease updates floating tags with an explicit force-with-lease expectation', () => {
+test('runRelease updates floating tags with an explicit force-with-lease expectation', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1': { stdout: 'abc123\trefs/tags/v1\n' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': { status: 1, stderr: 'not found' },
-    'gh\x00release\x00create\x00v1.2.3\x00--generate-notes\x00--verify-tag': {
-      stdout: 'https://github.com/org/repo/releases/tag/v1.2.3\n',
-    },
   })
 
-  runRelease(inputs({ majorTag: 'v1' }), exec)
+  await runRelease(inputs({ majorTag: 'v1' }), exec, makeApi())
 
   assert.equal(
     exec.called(
@@ -739,17 +674,14 @@ test('runRelease updates floating tags with an explicit force-with-lease expecta
   )
 })
 
-test('runRelease fails when assets are requested for an existing release', () => {
+test('runRelease fails when assets are requested for an existing release', async () => {
   const exec = makeExec({
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: 'abc\trefs/tags/v1.2.3\n' },
-    'gh\x00release\x00view\x00v1.2.3\x00--json\x00url,isDraft': {
-      stdout: '{"url":"https://github.com/org/repo/releases/tag/v1.2.3","isDraft":false}\n',
-    },
+  })
+  const api = makeApi({
+    getReleaseByTag: () => ({ exists: true, url: 'https://github.com/org/repo/releases/tag/v1.2.3', isDraft: false }),
   })
 
-  assert.throws(() => runRelease(inputs({ assets: ['dist/*.zip'] }), exec), /assets were requested/)
-  assert.equal(
-    exec.calls.some((call) => call[0] === 'gh' && call[1] === 'release' && call[2] === 'upload'),
-    false,
-  )
+  await assert.rejects(runRelease(inputs({ assets: ['dist/*.zip'] }), exec, api), /assets were requested/)
+  assert.equal(api.called('createRelease'), false)
 })

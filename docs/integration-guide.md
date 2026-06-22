@@ -71,15 +71,15 @@ steps:
       allow-non-default-branch: true
 ```
 
-By default, maintenance branch releases pass `--latest=false` to `gh release create`, so they do not accidentally
-replace the Latest marker for the main release line. Control this with `make-latest`:
+By default, maintenance branch releases are marked as not Latest, so they do not accidentally replace the Latest marker
+for the main release line. Control this with `make-latest`:
 
-| Value            | Behavior                                                           |
-| ---------------- | ------------------------------------------------------------------ |
-| `default-branch` | `--latest=false` for non-default branch; otherwise GitHub decides. |
-| `auto`           | GitHub's default Latest calculation in all cases.                  |
-| `true`           | Force the Latest marker regardless of branch.                      |
-| `false`          | Disable the Latest marker explicitly.                              |
+| Value            | Behavior                                                       |
+| ---------------- | -------------------------------------------------------------- |
+| `default-branch` | Not Latest for a non-default branch; otherwise GitHub decides. |
+| `auto`           | GitHub's default Latest calculation in all cases.              |
+| `true`           | Force the Latest marker regardless of branch.                  |
+| `false`          | Disable the Latest marker explicitly.                          |
 
 `allow-non-default-branch` does not bypass the pull request event guard or the tag-ref guard. Only the default-branch
 requirement is relaxed.
@@ -150,12 +150,12 @@ tag-triggered workflow dispatch:
     git-user-email: ${{ steps.app.outputs.app-slug }}[bot]@users.noreply.github.com
 ```
 
-Dispatch uses `github-token` for GitHub CLI calls and as request-scoped authentication for `git fetch`, `git ls-remote`,
-and `git push`. The token is passed only through per-command environment, never through `process.env` or `.git/config`:
-Git network commands receive it as a temporary `http.<server>.extraheader`, which also overrides any credential the
-checkout persisted. `persist-credentials: false` is recommended to make the override explicit, but not required. When
-`GITHUB_REPOSITORY` is present, dispatch verifies that `github-token` can access that repository before creating or
-pushing tags.
+Dispatch uses `github-token` for GitHub REST calls (sent as an `Authorization: Bearer` header against `GITHUB_API_URL`)
+and as request-scoped authentication for `git fetch`, `git ls-remote`, and `git push`. The token is passed only through
+per-command environment or per-request headers, never through `process.env` or `.git/config`: Git network commands
+receive it as a temporary `http.<server>.extraheader`, which also overrides any credential the checkout persisted.
+`persist-credentials: false` is recommended to make the override explicit, but not required. Dispatch verifies that
+`github-token` can access `GITHUB_REPOSITORY` before creating or pushing tags.
 
 ---
 

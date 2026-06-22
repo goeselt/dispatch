@@ -9,26 +9,29 @@ The project is intentionally small. Prefer keeping the release flow easy to read
 a few lines. A future maintainer should be able to understand the action by reading `index.js`, then the section headers
 in `release.js`.
 
-| File             | Responsibility                                                                |
-| ---------------- | ----------------------------------------------------------------------------- |
-| `action.yml`     | Public GitHub Action metadata: inputs, outputs, runtime.                      |
-| `index.js`       | GitHub Actions adapter: input/env parsing, command execution, outputs.        |
-| `assets.js`      | Workspace-contained asset path and glob resolution.                           |
-| `github-auth.js` | Scoped `github-token` injection for `gh` and Git network commands.            |
-| `signing.js`     | GPG key import into a throwaway keyring and tag-signing configuration.        |
-| `summary.js`     | Workflow command escaping, step summaries, and failure recovery guidance.     |
-| `tags.js`        | Git tag name validation and semantic floating tag validation.                 |
-| `release.js`     | Testable release behavior: guards, validation, git/gh calls, summaries.       |
-| `*.test.js`      | Unit tests with fake command execution; no network or real repository writes. |
-| `README.md`      | User-facing examples, retry model, release guards, input reference.           |
+| File                 | Responsibility                                                                |
+| -------------------- | ----------------------------------------------------------------------------- |
+| `action.yml`         | Public GitHub Action metadata: inputs, outputs, runtime.                      |
+| `index.js`           | GitHub Actions adapter: input/env parsing, command execution, outputs.        |
+| `assets.js`          | Workspace-contained asset path and glob resolution.                           |
+| `github-api.js`      | GitHub REST client (`fetch`-based) for the release auth, lookup, and create.  |
+| `github-auth.js`     | Scoped `github-token` injection for Git network commands.                     |
+| `release-context.js` | Pure helpers for interpreting the Actions ref/branch context.                 |
+| `signing.js`         | GPG key import into a throwaway keyring and tag-signing configuration.        |
+| `summary.js`         | Workflow command escaping, step summaries, and failure recovery guidance.     |
+| `tags.js`            | Git tag name validation and semantic floating tag validation.                 |
+| `release.js`         | Testable release behavior: guards, validation, Git and REST calls, summaries. |
+| `*.test.js`          | Unit tests with fake command execution; no network or real repository writes. |
+| `README.md`          | User-facing examples, retry model, release guards, input reference.           |
 
 The action runs inside a checkout, but it does not depend on checkout-persisted credentials for release writes. The
-`github-token` input is scoped to individual command executions and never written to `process.env` or `.git/config`:
-`gh` receives it as `GH_TOKEN`, and Git network commands (`fetch`, `ls-remote`, `push`) receive it as a request-scoped
-`http.<server>.extraheader` injected through Git's environment-based config (`GIT_CONFIG_COUNT`, Git >= 2.31). The
-first, empty header value resets any extraheader the checkout persisted for that URL, so the supplied token wins for the
-invocation without modifying stored credentials. Tag pushes use `--no-verify` so local `pre-push` hooks cannot observe
-that token environment.
+`github-token` input is never written to `process.env` or `.git/config`. GitHub REST calls (`github-api.js`) send it as
+an `Authorization: Bearer` header against `GITHUB_API_URL`, the REST base Actions exports for the active host
+(github.com, GitHub Enterprise Server, or `*.ghe.com`); the client never classifies hosts itself. Git network commands
+(`fetch`, `ls-remote`, `push`) receive the token as a request-scoped `http.<server>.extraheader` injected through Git's
+environment-based config (`GIT_CONFIG_COUNT`, Git >= 2.31). The first, empty header value resets any extraheader the
+checkout persisted for that URL, so the supplied token wins for the invocation without modifying stored credentials. Tag
+pushes use `--no-verify` so local `pre-push` hooks cannot observe that token environment.
 
 ## Release Model
 
@@ -66,16 +69,18 @@ When `signing-key` is set, existing concrete release tags must pass `git verify-
 tags are signed through a temporary `GNUPGHOME`; Git is pinned to the imported key fingerprint, and the temporary
 keyring is removed before the action exits.
 
-When `GITHUB_REPOSITORY` is present, GitHub CLI release calls should stay bound to that repository and release auth
-checks should happen before the concrete tag is created or pushed.
+REST release calls are bound to `GITHUB_REPOSITORY`, and the release auth check (`GET /repos/{owner}/{repo}`) happens
+before the concrete tag is created or pushed.
 
 ## Code Organization
 
-`release.js` keeps the release orchestration and the Git/GitHub release commands together. Reusable or
-security-sensitive helpers live in focused modules:
+`release.js` keeps the release orchestration and the Git commands together. Reusable or security-sensitive helpers live
+in focused modules:
 
 - `assets.js` for asset path/glob validation.
-- `github-auth.js` for scoped token injection.
+- `github-api.js` for the `fetch`-based GitHub REST client.
+- `github-auth.js` for scoped token injection into Git network commands.
+- `release-context.js` for ref/branch context helpers.
 - `signing.js` for temporary GPG setup.
 - `summary.js` for workflow output and failure guidance.
 - `tags.js` for tag validation.
@@ -84,7 +89,7 @@ Inside `release.js`, keep new helpers close to their section:
 
 - input parsing
 - release context guard
-- Git and GitHub CLI operations
+- Git operations
 - release orchestration
 
 When adding a new input, update all of these together:
@@ -94,12 +99,14 @@ When adding a new input, update all of these together:
 - `README.md`
 - `release.test.js`
 
-Token scoping lives in `github-auth.js`, not in `release.js`: `withGitHubToken` wraps `exec` so that `gh` and Git
-network commands receive the `github-token`, and `needsGitHubToken` decides which commands that covers.
+Token scoping for Git lives in `github-auth.js`, not in `release.js`: `withGitHubToken` wraps `exec` so that Git network
+commands receive the `github-token`, and `needsGitHubToken` decides which commands that covers. REST calls are
+authenticated separately inside `github-api.js`.
 
-When adding a new command, route it through the injected `exec` function so tests can assert the exact command without
-touching the network. If the command talks to GitHub (a new `gh` subcommand or a network-facing `git` verb), update
-`needsGitHubToken` in `github-auth.js` so it is authenticated.
+When adding a new Git command, route it through the injected `exec` function so tests can assert the exact command
+without touching the network. If it is a network-facing `git` verb, update `needsGitHubToken` in `github-auth.js` so it
+is authenticated. New GitHub operations belong on the `github-api.js` client (injected into `runRelease` as `api`), so
+tests can stub them without real network access.
 
 ## Development Setup
 
