@@ -2,7 +2,13 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { buildFailureSummary, buildStepSummary, escapeWorkflowCommand, failureNextStep } = require('./summary.js')
+const {
+  buildFailureSummary,
+  buildStepSummary,
+  escapeWorkflowCommand,
+  failureNextStep,
+  logInfo,
+} = require('./summary.js')
 
 function inputs(overrides = {}) {
   return {
@@ -119,4 +125,37 @@ test('failureNextStep maps common release failures to recovery guidance', () => 
   )
   assert.match(failureNextStep(new Error('could not read Username for https://github.com')), /github-token/)
   assert.match(failureNextStep(new Error('dispatch cannot create releases from pull request events')), /default branch/)
+})
+
+test('logInfo prefixes a single line and cannot be broken out of', () => {
+  const written = []
+  const origWrite = process.stdout.write.bind(process.stdout)
+  process.stdout.write = (msg) => {
+    written.push(msg)
+    return true
+  }
+  try {
+    logInfo('ok message')
+    // A smuggled newline must not open a second line that the runner parses as a workflow command.
+    logInfo('release failed: boom\n::add-mask::secret\r::error::pwned')
+  } finally {
+    process.stdout.write = origWrite
+  }
+
+  assert.equal(written[0], '[dispatch] ok message\n')
+
+  const injected = written[1]
+  assert.ok(injected.startsWith('[dispatch] '), 'line must keep the dispatch prefix')
+  assert.equal((injected.match(/\n/g) || []).length, 1, 'only the trailing newline is allowed')
+  assert.equal(injected.endsWith('\n'), true)
+  assert.equal(injected.includes('\r'), false)
+  // No line in the output may start with "::", or the runner would parse it as a workflow command.
+  assert.equal(
+    written
+      .join('')
+      .split('\n')
+      .some((line) => line.startsWith('::')),
+    false,
+    'an injected workflow command reached the start of a line',
+  )
 })

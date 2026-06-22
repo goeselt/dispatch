@@ -328,6 +328,11 @@ test('retryDelayMs grows with attempts and respects the Retry-After floor', () =
   assert.ok(retryDelayMs(1, '30') >= 30000)
 })
 
+test('retryDelayMs caps a hostile Retry-After so it cannot stall the run', () => {
+  // "Retry-After: 999999" would otherwise mean ~11.5 days; it must be clamped to the 60s ceiling.
+  assert.equal(retryDelayMs(1, '999999'), 60000)
+})
+
 test('request reports each retry through onRetry with the status and attempt', async () => {
   const events = []
   await withFetch(

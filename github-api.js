@@ -27,6 +27,9 @@ const USER_AGENT = 'goeselt-dispatch'
 const DEFAULT_TIMEOUT_MS = 60_000
 const DEFAULT_MAX_ATTEMPTS = 4
 const RETRY_BASE_MS = 500
+// Upper bound on a single backoff. It caps a hostile or buggy Retry-After (e.g. "Retry-After: 999999") so it cannot
+// stall the run for an unbounded time.
+const RETRY_MAX_DELAY_MS = 60_000
 // Statuses that mean the request was not applied, so retrying is safe for any method.
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 // Methods whose retry is safe after an ambiguous network failure. POST is excluded: a dropped connection might have
@@ -38,13 +41,14 @@ function defaultSleep(ms) {
 }
 
 // retryDelayMs computes exponential backoff with jitter and never waits less than a Retry-After header (seconds) the
-// server supplied (used by GitHub for rate and secondary-rate limits).
+// server supplied (used by GitHub for rate and secondary-rate limits). The result is capped at RETRY_MAX_DELAY_MS so a
+// hostile or buggy Retry-After cannot stall the run.
 function retryDelayMs(attempt, retryAfterHeader) {
   const retryAfter = Number.parseInt(retryAfterHeader ?? '', 10)
   const headerMs = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 0
   const backoff = RETRY_BASE_MS * 2 ** (attempt - 1)
   const jitter = Math.floor(Math.random() * RETRY_BASE_MS)
-  return Math.max(headerMs, backoff + jitter)
+  return Math.min(RETRY_MAX_DELAY_MS, Math.max(headerMs, backoff + jitter))
 }
 
 // URL helpers
