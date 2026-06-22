@@ -53,7 +53,18 @@ function gitAuthEnv(token) {
   return env
 }
 
-// withGitHubToken wraps exec so that gh receives the token as GH_TOKEN and git network commands receive the
+function githubHost() {
+  const serverUrl = process.env['GITHUB_SERVER_URL'] || 'https://github.com'
+  return new URL(serverUrl).hostname
+}
+
+function ghAuthEnv(token) {
+  const host = githubHost()
+  if (host === 'github.com') return { GH_TOKEN: token }
+  return { GH_HOST: host, GH_ENTERPRISE_TOKEN: token }
+}
+
+// withGitHubToken wraps exec so that gh receives the token for the active GitHub host and git network commands receive the
 // request-scoped extraheader, while all other commands run with an unmodified environment.
 // Returns fn(exec) unchanged when no token is configured.
 function withGitHubToken(exec, token, fn) {
@@ -61,7 +72,7 @@ function withGitHubToken(exec, token, fn) {
 
   const authenticatedExec = (name, args, options = {}) => {
     if (!needsGitHubToken(name, args)) return exec(name, args, options)
-    if (name === 'gh') return exec(name, args, withMergedEnv(options, { GH_TOKEN: token }))
+    if (name === 'gh') return exec(name, args, withMergedEnv(options, ghAuthEnv(token)))
     return exec(name, args, withMergedEnv(options, gitAuthEnv(token)))
   }
 
@@ -69,6 +80,7 @@ function withGitHubToken(exec, token, fn) {
 }
 
 module.exports = {
+  ghAuthEnv,
   gitAuthEnv,
   needsGitHubToken,
   withGitHubToken,

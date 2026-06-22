@@ -2,7 +2,7 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { gitAuthEnv, needsGitHubToken, withGitHubToken } = require('./github-auth.js')
+const { ghAuthEnv, gitAuthEnv, needsGitHubToken, withGitHubToken } = require('./github-auth.js')
 
 function makeExec() {
   const calls = []
@@ -83,6 +83,21 @@ test('gitAuthEnv appends after GIT_CONFIG_* already present in the environment',
   })
 })
 
+test('ghAuthEnv uses GH_TOKEN for github.com', () => {
+  withEnv({ GITHUB_SERVER_URL: 'https://github.com' }, () => {
+    assert.deepEqual(ghAuthEnv('secret-token'), { GH_TOKEN: 'secret-token' })
+  })
+})
+
+test('ghAuthEnv uses GH_HOST and GH_ENTERPRISE_TOKEN for enterprise hosts', () => {
+  withEnv({ GITHUB_SERVER_URL: 'https://company.ghe.com/' }, () => {
+    assert.deepEqual(ghAuthEnv('secret-token'), {
+      GH_HOST: 'company.ghe.com',
+      GH_ENTERPRISE_TOKEN: 'secret-token',
+    })
+  })
+})
+
 test('withGitHubToken injects token only into scoped child command environments', () => {
   const exec = makeExec()
 
@@ -98,6 +113,7 @@ test('withGitHubToken injects token only into scoped child command environments'
     assert.equal(pushEnv.GIT_CONFIG_KEY_2, 'http.https://github.com/.extraheader')
     assert.equal(pushEnv.GIT_CONFIG_VALUE_2.startsWith('Authorization: Basic '), true)
     assert.equal(exec.optionsFor('gh', 'auth', 'status').env.GH_TOKEN, 'secret-token')
+    assert.equal(exec.optionsFor('gh', 'auth', 'status').env.GH_ENTERPRISE_TOKEN, undefined)
     assert.equal(exec.optionsFor('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3').env, undefined)
     assert.equal(exec.optionsFor('gpg', '--version').env, undefined)
   })
@@ -106,4 +122,23 @@ test('withGitHubToken injects token only into scoped child command environments'
     Object.values(process.env).some((value) => String(value).includes('secret-token')),
     false,
   )
+})
+
+test('withGitHubToken injects enterprise env for gh on enterprise hosts', () => {
+  const exec = makeExec()
+
+  withEnv({ GITHUB_SERVER_URL: 'https://company.ghe.com', GIT_CONFIG_COUNT: undefined }, () => {
+    withGitHubToken(exec, 'secret-token', (authExec) => {
+      authExec('gh', ['release', 'view', 'v1.2.3'])
+      authExec('git', ['ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v1.2.3'])
+    })
+
+    const ghEnv = exec.optionsFor('gh', 'release', 'view', 'v1.2.3').env
+    assert.equal(ghEnv.GH_HOST, 'company.ghe.com')
+    assert.equal(ghEnv.GH_ENTERPRISE_TOKEN, 'secret-token')
+    assert.equal(ghEnv.GH_TOKEN, undefined)
+
+    const gitEnv = exec.optionsFor('git', 'ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v1.2.3').env
+    assert.equal(gitEnv.GIT_CONFIG_KEY_2, 'http.https://company.ghe.com/.extraheader')
+  })
 })
