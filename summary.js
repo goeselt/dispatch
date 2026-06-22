@@ -19,6 +19,13 @@ function writeWarning(message) {
   process.stdout.write(`::warning title=Dispatch::${escapeWorkflowCommand(message)}\n`)
 }
 
+// logInfo writes a namespaced, plain-text progress line to the log stream. It is deliberately not a workflow command,
+// so it never becomes a UI annotation; its job is to let a human or a coding agent follow the decisions dispatch made
+// and confirm the run took the expected path. Keep these lines sparse and decision-level, one per branch actually taken.
+function logInfo(message) {
+  process.stdout.write(`[dispatch] ${message}\n`)
+}
+
 function tableValue(value) {
   const text = value === undefined || value === null || value === '' ? '-' : String(value)
   return text
@@ -158,5 +165,6 @@ module.exports = {
   buildStepSummary,
   escapeWorkflowCommand,
   failureNextStep,
+  logInfo,
   writeWarning,
 }

@@ -16,6 +16,16 @@ const {
   runRelease,
 } = require('./release.js')
 
+// runRelease emits [dispatch] progress lines to stdout. Silence them so they do not clutter the test reporter; the few
+// tests that assert on output install their own capture inside the test body, which overrides this for their duration.
+const realStdoutWrite = process.stdout.write.bind(process.stdout)
+test.beforeEach(() => {
+  process.stdout.write = () => true
+})
+test.afterEach(() => {
+  process.stdout.write = realStdoutWrite
+})
+
 // makeExec mocks the synchronous git/gpg runner. When a shared trace array is passed, calls are appended to it so
 // ordering can be asserted across exec (git) and api (REST) operations.
 function makeExec(responses = {}, trace = null) {
@@ -633,6 +643,28 @@ test('runRelease warns when assets are specified but create-release is false', a
     process.stdout.write = origWrite
   }
   assert.ok(written.some((line) => line.includes('::warning') && line.includes('create-release is false')))
+})
+
+test('runRelease emits namespaced [dispatch] progress for the path it takes', async () => {
+  const exec = makeExec({
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+  })
+  const written = []
+  const origWrite = process.stdout.write.bind(process.stdout)
+  process.stdout.write = (msg) => {
+    written.push(msg)
+    return true
+  }
+  try {
+    await runRelease(inputs({ majorTag: 'v1' }), exec, makeApi())
+  } finally {
+    process.stdout.write = origWrite
+  }
+  const log = written.join('')
+  assert.match(log, /\[dispatch\] preparing release v1\.2\.3/)
+  assert.match(log, /\[dispatch\] created and pushed tag v1\.2\.3/)
+  assert.match(log, /\[dispatch\] created GitHub Release v1\.2\.3/)
+  assert.match(log, /\[dispatch\] updated floating tag v1 -> v1\.2\.3/)
 })
 
 test('runRelease updates floating tags after creating the release', async () => {

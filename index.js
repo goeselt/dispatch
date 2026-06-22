@@ -5,7 +5,7 @@ const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 const { parseAssets, parseBool, parseMakeLatest, runRelease } = require('./release.js')
 const { createClient } = require('./github-api.js')
-const { buildFailureSummary, buildStepSummary, escapeWorkflowCommand } = require('./summary.js')
+const { buildFailureSummary, buildStepSummary, escapeWorkflowCommand, logInfo } = require('./summary.js')
 
 // GitHub Actions adapter helpers
 
@@ -82,7 +82,12 @@ async function main() {
     },
   }
 
-  const api = createClient(token)
+  const api = createClient(token, {
+    onRetry: ({ method, status, attempt, maxAttempts, delayMs }) =>
+      logInfo(
+        `retrying ${method} after ${status ? `HTTP ${status}` : 'network error'} (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms`,
+      ),
+  })
   const result = await runRelease(inputs, exec, api)
   setOutput('tag-created', String(result.tagCreated))
   setOutput('release-created', String(result.releaseCreated))
@@ -92,13 +97,15 @@ async function main() {
   setOutput('minor-tag-updated', String(result.minorTagUpdated))
   appendStepSummary(buildStepSummary(inputs, result))
 
-  process.stdout.write(
-    `tag-created=${result.tagCreated} release-created=${result.releaseCreated} assets-uploaded=${result.assetsUploaded}\n`,
+  const releaseState = inputs.createRelease ? (result.releaseCreated ? 'created' : 'reused') : 'skipped'
+  logInfo(
+    `done -- tag=${result.tagCreated ? 'created' : 'reused'} release=${releaseState} assets=${result.assetsUploaded}`,
   )
 }
 
 main().catch((err) => {
   appendStepSummary(buildFailureSummary(err, inputs))
+  logInfo(`release failed: ${err.message}`)
   process.stdout.write(`::error title=Dispatch::${escapeWorkflowCommand(err.message)}\n`)
   process.exit(1)
 })

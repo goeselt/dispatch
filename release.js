@@ -6,7 +6,7 @@ const { resolveAssets } = require('./assets.js')
 const { withGitHubToken } = require('./github-auth.js')
 const { branchNameFromRef, hasReleaseContext, inferRefType } = require('./release-context.js')
 const { setupSigning } = require('./signing.js')
-const { RELEASE_CONTEXT_HELP, writeWarning } = require('./summary.js')
+const { RELEASE_CONTEXT_HELP, logInfo, writeWarning } = require('./summary.js')
 const { validateFloatingTags, validateOptionalTagName, validateTagName } = require('./tags.js')
 
 // Input parsing
@@ -71,6 +71,15 @@ function guardReleaseContext(inputs) {
       `dispatch is running on ${refName}, but releases are only allowed from the default branch ${defaultBranch}. Set allow-non-default-branch to true only if this branch release is intentional.`,
     )
   }
+}
+
+// isNonDefaultBranchRelease reports whether the run targets a branch other than the repository default. Reaching the
+// release flow with this true means allow-non-default-branch permitted it (guardReleaseContext would have thrown
+// otherwise), so it is worth surfacing in the log.
+function isNonDefaultBranchRelease(context = {}) {
+  const refName = context.refName || branchNameFromRef(context.ref || '')
+  const defaultBranch = context.defaultBranch || ''
+  return Boolean(defaultBranch && refName && refName !== defaultBranch)
 }
 
 function guardReleaseHead(exec, inputs) {
@@ -186,18 +195,28 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
   let cleanupSigning = () => {}
   try {
     return await withGitHubToken(exec, inputs.githubToken, async (releaseExec) => {
+      logInfo(`preparing release ${inputs.releaseTag}`)
+      if (isNonDefaultBranchRelease(inputs.releaseContext)) {
+        logInfo(
+          `releasing from non-default branch ${inputs.releaseContext.refName} (allowed by allow-non-default-branch)`,
+        )
+      }
       configureGitUser(releaseExec, inputs.gitUserName, inputs.gitUserEmail)
-      if (inputs.signingKey) cleanupSigning = setupSigning(releaseExec, inputs.signingKey)
+      if (inputs.signingKey) {
+        cleanupSigning = setupSigning(releaseExec, inputs.signingKey)
+        logInfo('tag signing enabled')
+      }
       if (inputs.createRelease) await api.checkAuth(repo)
 
       let tagCreated = false
       if (tagExists(releaseExec, inputs.releaseTag)) {
         fetchTag(releaseExec, inputs.releaseTag)
         verifyExistingReleaseTag(releaseExec, inputs.releaseTag, expectedReleaseSha, Boolean(inputs.signingKey))
-        process.stdout.write(`tag ${inputs.releaseTag} already exists; reusing it\n`)
+        logInfo(`tag ${inputs.releaseTag} already exists; reusing it`)
       } else if (inputs.createTag) {
         createTag(releaseExec, inputs.releaseTag)
         tagCreated = true
+        logInfo(`created and pushed tag ${inputs.releaseTag}`)
       } else {
         throw new Error(`release tag ${inputs.releaseTag} does not exist and create-tag is false`)
       }
@@ -214,7 +233,7 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
             )
           }
           releaseUrl = existing.url
-          process.stdout.write(`release ${inputs.releaseTag} already exists; reusing it\n`)
+          logInfo(`release ${inputs.releaseTag} already exists; reusing it`)
           if (inputs.assets.length > 0) {
             throw new Error(
               `release ${inputs.releaseTag} already exists, but assets were requested. Dispatch does not upload assets to an existing release because immutable releases cannot be repaired after publish.`,
@@ -227,13 +246,21 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
           releaseUrl = await api.createRelease(repo, inputs.releaseTag, assets, inputs)
           releaseCreated = true
           assetsUploaded = assets.length
+          logInfo(
+            `created GitHub Release ${inputs.releaseTag}${assets.length ? ` with ${assets.length} asset(s)` : ''}`,
+          )
         }
-      } else if (inputs.assets.length > 0) {
-        writeWarning('assets specified but create-release is false; assets will not be uploaded')
+      } else {
+        logInfo('create-release=false; tag-only run, skipping GitHub Release')
+        if (inputs.assets.length > 0) {
+          writeWarning('assets specified but create-release is false; assets will not be uploaded')
+        }
       }
 
       const majorTagUpdated = updateFloatingTag(releaseExec, inputs.majorTag, inputs.releaseTag)
+      if (majorTagUpdated) logInfo(`updated floating tag ${inputs.majorTag} -> ${inputs.releaseTag}`)
       const minorTagUpdated = updateFloatingTag(releaseExec, inputs.minorTag, inputs.releaseTag)
+      if (minorTagUpdated) logInfo(`updated floating tag ${inputs.minorTag} -> ${inputs.releaseTag}`)
 
       return {
         tagCreated,

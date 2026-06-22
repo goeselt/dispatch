@@ -327,3 +327,39 @@ test('retryDelayMs grows with attempts and respects the Retry-After floor', () =
   assert.ok(retryDelayMs(3, null) >= retryDelayMs(1, null))
   assert.ok(retryDelayMs(1, '30') >= 30000)
 })
+
+test('request reports each retry through onRetry with the status and attempt', async () => {
+  const events = []
+  await withFetch(
+    (url, options, i) => (i === 0 ? fakeResponse({ status: 503 }) : fakeResponse({ status: 200, body: { ok: true } })),
+    async () => {
+      await request('tok', 'GET', 'https://api.example/x', { sleep: noSleep, onRetry: (info) => events.push(info) })
+    },
+  )
+  assert.equal(events.length, 1)
+  assert.deepEqual(
+    {
+      method: events[0].method,
+      status: events[0].status,
+      attempt: events[0].attempt,
+      maxAttempts: events[0].maxAttempts,
+    },
+    { method: 'GET', status: 503, attempt: 1, maxAttempts: 4 },
+  )
+  assert.ok(events[0].delayMs >= 500)
+})
+
+test('onRetry reports a null status for a network-level retry', async () => {
+  const events = []
+  await withFetch(
+    (url, options, i) => {
+      if (i === 0) throw new Error('ECONNRESET')
+      return fakeResponse({ status: 200, body: {} })
+    },
+    async () => {
+      await request('tok', 'GET', 'https://api.example/x', { sleep: noSleep, onRetry: (info) => events.push(info) })
+    },
+  )
+  assert.equal(events.length, 1)
+  assert.equal(events[0].status, null)
+})

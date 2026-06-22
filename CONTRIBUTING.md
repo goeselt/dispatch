@@ -111,6 +111,16 @@ without touching the network. If it is a network-facing `git` verb, update `need
 is authenticated. New GitHub operations belong on the `github-api.js` client (injected into `runRelease` as `api`), so
 tests can stub them without real network access.
 
+## Logging
+
+Dispatch writes plain `[dispatch] ...` progress lines via `logInfo` (in `summary.js`) so a human or a coding agent
+reading the workflow log can follow which branch the run took and confirm it behaved as expected. Keep these sparse and
+decision-level: emit one line per branch actually taken (tag created vs reused, release created/reused/skipped, floating
+tag updated, signing enabled, a non-default-branch release), not per step. Problems use `writeWarning` (a `::warning`
+annotation) or the `::error` annotation in `index.js`; retries are surfaced through the client's `onRetry` callback,
+which `index.js` wires to `logInfo`. The rich human view stays in the GitHub step summary (`buildStepSummary`), a
+separate channel from the log stream.
+
 ## Development Setup
 
 - Node.js 20 or later

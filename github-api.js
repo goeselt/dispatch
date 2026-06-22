@@ -81,7 +81,9 @@ function repoPath(repo) {
 //
 // Transient failures (retryable HTTP statuses for any method, plus network/timeout failures for idempotent methods) are
 // retried up to maxAttempts with exponential backoff. timeoutMs aborts a stalled request so the retry can take over;
-// pass 0 to disable it for long-running transfers such as asset uploads.
+// pass 0 to disable it for long-running transfers such as asset uploads. onRetry, when provided, is called before each
+// backoff with { method, status, attempt, maxAttempts, delayMs } so callers can surface that a retry is happening
+// (status is null for a network failure).
 async function request(token, method, url, options = {}) {
   const {
     body,
@@ -90,6 +92,7 @@ async function request(token, method, url, options = {}) {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     maxAttempts = DEFAULT_MAX_ATTEMPTS,
     sleep = defaultSleep,
+    onRetry,
   } = options
 
   for (let attempt = 1; ; attempt++) {
@@ -111,7 +114,9 @@ async function request(token, method, url, options = {}) {
       // Network failure or timeout before any response. Retrying is only safe for idempotent methods; a POST might have
       // been applied server-side, so it fails fast to avoid a duplicate release or asset.
       if (RETRYABLE_NETWORK_METHODS.has(method) && attempt < maxAttempts) {
-        await sleep(retryDelayMs(attempt, null))
+        const delayMs = retryDelayMs(attempt, null)
+        onRetry?.({ method, status: null, attempt, maxAttempts, delayMs })
+        await sleep(delayMs)
         continue
       }
       throw new Error(`${method} ${url}: ${err.message}`, { cause: err })
@@ -133,7 +138,9 @@ async function request(token, method, url, options = {}) {
       const retryAfter = res.headers.get('retry-after')
       const retryable = RETRYABLE_STATUSES.has(res.status) || retryAfter != null
       if (retryable && attempt < maxAttempts) {
-        await sleep(retryDelayMs(attempt, retryAfter))
+        const delayMs = retryDelayMs(attempt, retryAfter)
+        onRetry?.({ method, status: res.status, attempt, maxAttempts, delayMs })
+        await sleep(delayMs)
         continue
       }
       const detail = parsed && parsed.message ? parsed.message : typeof parsed === 'string' ? parsed.trim() : ''
