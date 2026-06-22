@@ -564,7 +564,8 @@ test('runRelease uploads assets and updates floating tags', async () => {
 
   const createCall = api.callFor('createRelease')
   assert.ok(createCall, 'createRelease was not called')
-  assert.deepEqual(createCall[3], ['dist/a.zip'])
+  // Assets are passed as absolute paths resolved against the validating workspace, not process.cwd()-relative.
+  assert.deepEqual(createCall[3], [path.join(dir, 'dist', 'a.zip')])
 
   assert.equal(exec.called('git', 'tag', '-fa', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'), true)
   assert.equal(

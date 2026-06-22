@@ -1,5 +1,7 @@
 'use strict'
 
+const path = require('node:path')
+
 const { resolveAssets } = require('./assets.js')
 const { withGitHubToken } = require('./github-auth.js')
 const { branchNameFromRef, hasReleaseContext, inferRefType } = require('./release-context.js')
@@ -219,7 +221,9 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
             )
           }
         } else {
-          const assets = resolveAssets(inputs.assets, cwd)
+          // Resolve to absolute paths against the same cwd that validated them, so the REST client reads the exact
+          // files that asset validation approved rather than re-resolving relative paths against process.cwd().
+          const assets = resolveAssets(inputs.assets, cwd).map((asset) => path.resolve(cwd, asset))
           releaseUrl = await api.createRelease(repo, inputs.releaseTag, assets, inputs)
           releaseCreated = true
           assetsUploaded = assets.length

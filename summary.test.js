@@ -107,6 +107,16 @@ test('failureNextStep maps common release failures to recovery guidance', () => 
     failureNextStep(new Error('release tag v1.2.3 does not exist and create-tag is false')),
     /Create the tag/,
   )
-  assert.match(failureNextStep(new Error('gh auth status: not logged in')), /github-token/)
+  assert.match(
+    failureNextStep(
+      new Error('GET https://api.github.com/repos/org/repo: HTTP 401 Must authenticate to access this API.'),
+    ),
+    /github-token/,
+  )
+  assert.match(
+    failureNextStep(new Error('POST https://api.github.com/repos/org/repo/releases: HTTP 403')),
+    /github-token/,
+  )
+  assert.match(failureNextStep(new Error('could not read Username for https://github.com')), /github-token/)
   assert.match(failureNextStep(new Error('dispatch cannot create releases from pull request events')), /default branch/)
 })

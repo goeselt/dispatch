@@ -43,9 +43,30 @@ function withApiUrl(value, fn) {
   }
 }
 
-test('apiBaseUrl falls back to api.github.com and trims trailing slashes', () => {
-  withApiUrl(undefined, () => assert.equal(apiBaseUrl(), 'https://api.github.com'))
+test('apiBaseUrl trims trailing slashes for the active host', () => {
+  withApiUrl('https://api.github.com', () => assert.equal(apiBaseUrl(), 'https://api.github.com'))
   withApiUrl('https://ghe.example.com/api/v3/', () => assert.equal(apiBaseUrl(), 'https://ghe.example.com/api/v3'))
+})
+
+test('apiBaseUrl fails closed when GITHUB_API_URL is unset instead of leaking the token to a default host', () => {
+  withApiUrl(undefined, () => assert.throws(() => apiBaseUrl(), /GITHUB_API_URL is not set/))
+})
+
+test('an authenticated call refuses to run when GITHUB_API_URL is unset', async () => {
+  let fetched = false
+  const previous = global.fetch
+  global.fetch = () => {
+    fetched = true
+    return Promise.resolve(fakeResponse({ status: 200, body: {} }))
+  }
+  try {
+    await withApiUrl(undefined, () =>
+      assert.rejects(createClient('secret-token').checkAuth('owner/name'), /GITHUB_API_URL is not set/),
+    )
+  } finally {
+    global.fetch = previous
+  }
+  assert.equal(fetched, false, 'no request must be made without a known API host')
 })
 
 test('repoPath splits and encodes owner/name', () => {
@@ -90,7 +111,12 @@ test('checkAuth GETs the repository with a bearer header and throws on failure',
     withFetch(
       () => fakeResponse({ status: 401, body: { message: 'Must authenticate to access this API.' } }),
       async () => {
-        await assert.rejects(createClient('secret').checkAuth('owner/name'), /HTTP 401.*Must authenticate/)
+        await assert.rejects(createClient('super-secret-token').checkAuth('owner/name'), (err) => {
+          assert.match(err.message, /HTTP 401.*Must authenticate/)
+          // The raw token must never appear in an error surfaced to logs or the step summary.
+          assert.equal(err.message.includes('super-secret-token'), false, 'token leaked into the error message')
+          return true
+        })
       },
     ),
   )

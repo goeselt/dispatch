@@ -17,8 +17,18 @@ const { branchNameFromRef, hasReleaseContext } = require('./release-context.js')
 const ASSET_CONTENT_TYPE = 'application/octet-stream'
 
 // apiBaseUrl returns the REST API base for the active GitHub host without a trailing slash.
+// It fails closed when GITHUB_API_URL is missing rather than defaulting to api.github.com: every request carries the
+// token in an Authorization header, and silently falling back to the public host would transmit an Enterprise token to
+// github.com. Actions always exports GITHUB_API_URL for the active host, so the variable is only absent when the action
+// runs outside its supported environment.
 function apiBaseUrl() {
-  return (process.env['GITHUB_API_URL'] || 'https://api.github.com').replace(/\/+$/, '')
+  const url = process.env['GITHUB_API_URL']
+  if (!url) {
+    throw new Error(
+      'GITHUB_API_URL is not set; refusing to send the token to a default host. Run dispatch in GitHub Actions.',
+    )
+  }
+  return url.replace(/\/+$/, '')
 }
 
 // repoPath splits "owner/name" and percent-encodes each segment for safe interpolation into a URL path.
@@ -81,7 +91,8 @@ function makeLatestField(options = {}) {
   return 'false'
 }
 
-// uploadAsset uploads a single file to a release. upload_url is an RFC 6570 template such as
+// uploadAsset uploads a single file to a release. assetPath must be absolute (callers resolve it against the workspace
+// that validated it, so the read base matches the validation base). upload_url is an RFC 6570 template such as
 // "https://uploads.<host>/.../assets{?name,label}"; GitHub returns it already pointing at the correct uploads host, so
 // we only strip the template suffix and append the file name. The body is the raw file bytes.
 async function uploadAsset(token, uploadUrl, assetPath) {

@@ -122,11 +122,7 @@ function failureNextStep(error) {
   if (/(release-tag|major-tag|minor-tag).*?(tag name|must not|not allowed|required)/i.test(message)) {
     return TAG_HELP
   }
-  if (
-    /not logged in|bad credentials|could not check release|gh auth status|gh repo view|could not read Username/i.test(
-      message,
-    )
-  ) {
+  if (/bad credentials|must authenticate|could not read Username|HTTP 401|HTTP 403/i.test(message)) {
     return 'Check the github-token input and repository permissions, then rerun dispatch.'
   }
   if (/force-with-lease/i.test(message)) {
