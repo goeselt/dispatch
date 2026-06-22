@@ -1,9 +1,12 @@
 'use strict'
 
+const path = require('node:path')
+
 const { resolveAssets } = require('./assets.js')
 const { withGitHubToken } = require('./github-auth.js')
+const { branchNameFromRef, hasReleaseContext, inferRefType } = require('./release-context.js')
 const { setupSigning } = require('./signing.js')
-const { RELEASE_CONTEXT_HELP, writeWarning } = require('./summary.js')
+const { RELEASE_CONTEXT_HELP, logInfo, writeWarning } = require('./summary.js')
 const { validateFloatingTags, validateOptionalTagName, validateTagName } = require('./tags.js')
 
 // Input parsing
@@ -33,17 +36,6 @@ function parseAssets(input) {
 }
 
 // Release context guard
-
-function inferRefType(ref) {
-  if (ref?.startsWith('refs/heads/')) return 'branch'
-  if (ref?.startsWith('refs/tags/')) return 'tag'
-  if (ref?.startsWith('refs/pull/')) return 'pull_request'
-  return ''
-}
-
-function branchNameFromRef(ref) {
-  return ref?.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ''
-}
 
 function guardReleaseContext(inputs) {
   const context = inputs.releaseContext || {}
@@ -81,10 +73,13 @@ function guardReleaseContext(inputs) {
   }
 }
 
-function hasReleaseContext(context = {}) {
-  return Boolean(
-    context.eventName || context.ref || context.refType || context.refName || context.defaultBranch || context.sha,
-  )
+// isNonDefaultBranchRelease reports whether the run targets a branch other than the repository default. Reaching the
+// release flow with this true means allow-non-default-branch permitted it (guardReleaseContext would have thrown
+// otherwise), so it is worth surfacing in the log.
+function isNonDefaultBranchRelease(context = {}) {
+  const refName = context.refName || branchNameFromRef(context.ref || '')
+  const defaultBranch = context.defaultBranch || ''
+  return Boolean(defaultBranch && refName && refName !== defaultBranch)
 }
 
 function guardReleaseHead(exec, inputs) {
@@ -107,19 +102,11 @@ function guardReleaseHead(exec, inputs) {
   )
 }
 
-// Git and GitHub CLI operations
+// Git command wrappers
 
 function configureGitUser(exec, name, email) {
   if (name) exec('git', ['config', 'user.name', name])
   if (email) exec('git', ['config', 'user.email', email])
-}
-
-function checkReleaseAuth(exec, repo = '') {
-  exec('gh', ['repo', 'view', ...(repo ? [repo] : []), '--json', 'nameWithOwner'])
-}
-
-function ghRepoArgs(repo = '') {
-  return repo ? ['--repo', repo] : []
 }
 
 function remoteTagObjectId(exec, tag) {
@@ -169,67 +156,6 @@ function fetchTag(exec, tag) {
   exec('git', ['fetch', '--force', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
 }
 
-// `gh release view` exits non-zero with "release not found" (or an HTTP 404 from the underlying API call) when the
-// tag has no release. Any other non-zero exit (auth, rate limit, network) must not be mistaken for a missing
-// release, or this action would try to create a release that already exists.
-function isMissingReleaseError(output) {
-  return /(^|[\s:])(?:release )?not found(?:[\s.]|$)|HTTP 404/i.test(output)
-}
-
-function releaseView(exec, tag, repo = '') {
-  validateTagName(tag)
-  const result = exec('gh', ['release', 'view', tag, ...ghRepoArgs(repo), '--json', 'url,isDraft'], {
-    allowFailure: true,
-  })
-  if (result.status !== 0) {
-    const output = result.stderr || result.stdout
-    if (isMissingReleaseError(output)) return { exists: false, url: '' }
-    throw new Error(`could not check release ${tag}: ${output}`)
-  }
-  let release
-  try {
-    release = JSON.parse(result.stdout)
-  } catch (err) {
-    throw new Error(`could not parse release ${tag} response: ${result.stdout}`, { cause: err })
-  }
-  return { exists: true, url: release.url || '', isDraft: Boolean(release.isDraft) }
-}
-
-// Assets are passed to `gh release create` directly so GitHub CLI can create a draft, upload assets, and publish it.
-// With release immutability on, a separate upload after publishing fails because assets can no longer be modified.
-function releaseCreateLatestArgs(inputs = {}) {
-  const makeLatest = inputs.makeLatest || 'default-branch'
-  if (makeLatest === 'true') return ['--latest']
-  if (makeLatest === 'false') return ['--latest=false']
-  if (makeLatest === 'auto') return []
-
-  const context = inputs.releaseContext || {}
-  if (!hasReleaseContext(context)) return []
-
-  const refName = context.refName || branchNameFromRef(context.ref || '')
-  const defaultBranch = context.defaultBranch || ''
-  if (defaultBranch && refName && refName === defaultBranch) return []
-  return ['--latest=false']
-}
-
-function createRelease(exec, tag, assets = [], options = {}) {
-  validateTagName(tag)
-  const latestArgs = releaseCreateLatestArgs(options)
-  const repoArgs = ghRepoArgs(options.releaseContext?.repository)
-  const assetArgs = assets.length > 0 ? ['--', ...assets] : []
-  const result = exec('gh', [
-    'release',
-    'create',
-    tag,
-    ...repoArgs,
-    '--generate-notes',
-    '--verify-tag',
-    ...latestArgs,
-    ...assetArgs,
-  ])
-  return result.stdout.trim()
-}
-
 function updateFloatingTag(exec, floatingTag, releaseTag) {
   if (!floatingTag) return false
   validateTagName(floatingTag)
@@ -248,7 +174,10 @@ function updateFloatingTag(exec, floatingTag, releaseTag) {
 
 // Release orchestration
 
-function runRelease(inputs, exec, cwd = process.cwd()) {
+// runRelease orchestrates the release. Git operations run synchronously through exec; the GitHub REST operations
+// (auth check, release lookup, release creation with asset upload) run through the injected async api client, so the
+// whole function is async.
+async function runRelease(inputs, exec, api, cwd = process.cwd()) {
   if (!inputs.releaseTag) throw new Error('release-tag is required')
   validateTagName(inputs.releaseTag, 'release-tag')
   validateOptionalTagName(inputs.majorTag, 'major-tag')
@@ -261,22 +190,33 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
     )
   }
   const expectedReleaseSha = guardReleaseHead(exec, inputs)
+  const repo = inputs.releaseContext?.repository
 
   let cleanupSigning = () => {}
   try {
-    return withGitHubToken(exec, inputs.githubToken, (releaseExec) => {
+    return await withGitHubToken(exec, inputs.githubToken, async (releaseExec) => {
+      logInfo(`preparing release ${inputs.releaseTag}`)
+      if (isNonDefaultBranchRelease(inputs.releaseContext)) {
+        logInfo(
+          `releasing from non-default branch ${inputs.releaseContext.refName} (allowed by allow-non-default-branch)`,
+        )
+      }
       configureGitUser(releaseExec, inputs.gitUserName, inputs.gitUserEmail)
-      if (inputs.signingKey) cleanupSigning = setupSigning(releaseExec, inputs.signingKey)
-      if (inputs.createRelease) checkReleaseAuth(releaseExec, inputs.releaseContext?.repository)
+      if (inputs.signingKey) {
+        cleanupSigning = setupSigning(releaseExec, inputs.signingKey)
+        logInfo('tag signing enabled')
+      }
+      if (inputs.createRelease) await api.checkAuth(repo)
 
       let tagCreated = false
       if (tagExists(releaseExec, inputs.releaseTag)) {
         fetchTag(releaseExec, inputs.releaseTag)
         verifyExistingReleaseTag(releaseExec, inputs.releaseTag, expectedReleaseSha, Boolean(inputs.signingKey))
-        process.stdout.write(`tag ${inputs.releaseTag} already exists; reusing it\n`)
+        logInfo(`tag ${inputs.releaseTag} already exists; reusing it`)
       } else if (inputs.createTag) {
         createTag(releaseExec, inputs.releaseTag)
         tagCreated = true
+        logInfo(`created and pushed tag ${inputs.releaseTag}`)
       } else {
         throw new Error(`release tag ${inputs.releaseTag} does not exist and create-tag is false`)
       }
@@ -285,7 +225,7 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
       let releaseUrl = ''
       let assetsUploaded = 0
       if (inputs.createRelease) {
-        const existing = releaseView(releaseExec, inputs.releaseTag, inputs.releaseContext?.repository)
+        const existing = await api.getReleaseByTag(repo, inputs.releaseTag)
         if (existing.exists) {
           if (existing.isDraft) {
             throw new Error(
@@ -293,24 +233,34 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
             )
           }
           releaseUrl = existing.url
-          process.stdout.write(`release ${inputs.releaseTag} already exists; reusing it\n`)
+          logInfo(`release ${inputs.releaseTag} already exists; reusing it`)
           if (inputs.assets.length > 0) {
             throw new Error(
               `release ${inputs.releaseTag} already exists, but assets were requested. Dispatch does not upload assets to an existing release because immutable releases cannot be repaired after publish.`,
             )
           }
         } else {
-          const assets = resolveAssets(inputs.assets, cwd)
-          releaseUrl = createRelease(releaseExec, inputs.releaseTag, assets, inputs)
+          // Resolve to absolute paths against the same cwd that validated them, so the REST client reads the exact
+          // files that asset validation approved rather than re-resolving relative paths against process.cwd().
+          const assets = resolveAssets(inputs.assets, cwd).map((asset) => path.resolve(cwd, asset))
+          releaseUrl = await api.createRelease(repo, inputs.releaseTag, assets, inputs)
           releaseCreated = true
           assetsUploaded = assets.length
+          logInfo(
+            `created GitHub Release ${inputs.releaseTag}${assets.length ? ` with ${assets.length} asset(s)` : ''}`,
+          )
         }
-      } else if (inputs.assets.length > 0) {
-        writeWarning('assets specified but create-release is false; assets will not be uploaded')
+      } else {
+        logInfo('create-release=false; tag-only run, skipping GitHub Release')
+        if (inputs.assets.length > 0) {
+          writeWarning('assets specified but create-release is false; assets will not be uploaded')
+        }
       }
 
       const majorTagUpdated = updateFloatingTag(releaseExec, inputs.majorTag, inputs.releaseTag)
+      if (majorTagUpdated) logInfo(`updated floating tag ${inputs.majorTag} -> ${inputs.releaseTag}`)
       const minorTagUpdated = updateFloatingTag(releaseExec, inputs.minorTag, inputs.releaseTag)
+      if (minorTagUpdated) logInfo(`updated floating tag ${inputs.minorTag} -> ${inputs.releaseTag}`)
 
       return {
         tagCreated,
@@ -328,19 +278,14 @@ function runRelease(inputs, exec, cwd = process.cwd()) {
 
 // Export small helpers to keep command-heavy behavior unit-testable without touching the network.
 module.exports = {
-  checkReleaseAuth,
-  createRelease,
   createTag,
   fetchTag,
   guardReleaseHead,
   guardReleaseContext,
-  isMissingReleaseError,
   localTagTargetObjectId,
   parseAssets,
   parseBool,
   parseMakeLatest,
-  releaseView,
-  releaseCreateLatestArgs,
   remoteTagObjectId,
   runRelease,
   tagExists,

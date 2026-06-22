@@ -19,6 +19,27 @@ function writeWarning(message) {
   process.stdout.write(`::warning title=Dispatch::${escapeWorkflowCommand(message)}\n`)
 }
 
+// stripControlChars replaces ASCII control characters (including CR, LF, and ESC) with spaces. A logged value may carry
+// untrusted text (a Git/API error message, a branch name); without this a smuggled newline could open a second log line
+// that the runner parses as a workflow command (e.g. "\n::add-mask::" or "\n::error::"), and an ESC could inject
+// terminal escape sequences to spoof the log. tags.js validates the same way for tag names.
+function stripControlChars(value) {
+  let out = ''
+  for (const ch of String(value ?? '')) {
+    const code = ch.codePointAt(0)
+    out += code < 0x20 || code === 0x7f ? ' ' : ch
+  }
+  return out
+}
+
+// logInfo writes a namespaced, plain-text progress line to the log stream. It is deliberately not a workflow command,
+// so it never becomes a UI annotation; its job is to let a human or a coding agent follow the decisions dispatch made
+// and confirm the run took the expected path. Keep these lines sparse and decision-level, one per branch actually taken.
+// The message is stripped of control characters so it cannot break out of its single line.
+function logInfo(message) {
+  process.stdout.write(`[dispatch] ${stripControlChars(message)}\n`)
+}
+
 function tableValue(value) {
   const text = value === undefined || value === null || value === '' ? '-' : String(value)
   return text
@@ -122,11 +143,7 @@ function failureNextStep(error) {
   if (/(release-tag|major-tag|minor-tag).*?(tag name|must not|not allowed|required)/i.test(message)) {
     return TAG_HELP
   }
-  if (
-    /not logged in|bad credentials|could not check release|gh auth status|gh repo view|could not read Username/i.test(
-      message,
-    )
-  ) {
+  if (/bad credentials|must authenticate|could not read Username|HTTP 401|HTTP 403/i.test(message)) {
     return 'Check the github-token input and repository permissions, then rerun dispatch.'
   }
   if (/force-with-lease/i.test(message)) {
@@ -162,5 +179,6 @@ module.exports = {
   buildStepSummary,
   escapeWorkflowCommand,
   failureNextStep,
+  logInfo,
   writeWarning,
 }

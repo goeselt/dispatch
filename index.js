@@ -4,7 +4,10 @@ const fs = require('node:fs')
 const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 const { parseAssets, parseBool, parseMakeLatest, runRelease } = require('./release.js')
-const { buildFailureSummary, buildStepSummary, escapeWorkflowCommand } = require('./summary.js')
+const { createClient } = require('./github-api.js')
+const { buildFailureSummary, buildStepSummary, escapeWorkflowCommand, logInfo } = require('./summary.js')
+
+// GitHub Actions adapter helpers
 
 function input(name, fallback = '') {
   return process.env[`INPUT_${name.toUpperCase()}`] ?? fallback
@@ -48,9 +51,11 @@ function exec(name, args, { allowFailure = false, input, env } = {}) {
   }
 }
 
+// Entry point
+
 let inputs = {}
 
-try {
+async function main() {
   const token = input('GITHUB-TOKEN')
   const actor = process.env['GITHUB_ACTOR'] || 'github-actions[bot]'
   inputs = {
@@ -77,7 +82,13 @@ try {
     },
   }
 
-  const result = runRelease(inputs, exec)
+  const api = createClient(token, {
+    onRetry: ({ method, status, attempt, maxAttempts, delayMs }) =>
+      logInfo(
+        `retrying ${method} after ${status ? `HTTP ${status}` : 'network error'} (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms`,
+      ),
+  })
+  const result = await runRelease(inputs, exec, api)
   setOutput('tag-created', String(result.tagCreated))
   setOutput('release-created', String(result.releaseCreated))
   setOutput('release-url', result.releaseUrl)
@@ -86,11 +97,15 @@ try {
   setOutput('minor-tag-updated', String(result.minorTagUpdated))
   appendStepSummary(buildStepSummary(inputs, result))
 
-  process.stdout.write(
-    `tag-created=${result.tagCreated} release-created=${result.releaseCreated} assets-uploaded=${result.assetsUploaded}\n`,
+  const releaseState = inputs.createRelease ? (result.releaseCreated ? 'created' : 'reused') : 'skipped'
+  logInfo(
+    `done -- tag=${result.tagCreated ? 'created' : 'reused'} release=${releaseState} assets=${result.assetsUploaded}`,
   )
-} catch (err) {
+}
+
+main().catch((err) => {
   appendStepSummary(buildFailureSummary(err, inputs))
+  logInfo(`release failed: ${err.message}`)
   process.stdout.write(`::error title=Dispatch::${escapeWorkflowCommand(err.message)}\n`)
   process.exit(1)
-}
+})

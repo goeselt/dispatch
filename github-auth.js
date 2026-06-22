@@ -1,8 +1,10 @@
 'use strict'
 
-// Scopes a GitHub token to the individual git/gh commands that need it.
+// Scopes a GitHub token to the individual git network commands that need it.
 // The token is passed only through the spawned child's environment for a single command; it is never written
 // to process.env or to .git/config, so it cannot leak into downstream workflow steps or persist on disk.
+// GitHub REST API calls are made directly from github-api.js with the token in an Authorization header and never
+// pass through this exec wrapper.
 
 // withMergedEnv layers env on top of the current process environment without mutating process.env.
 // The result is meant for a single child command's options.env only.
@@ -11,7 +13,6 @@ function withMergedEnv(options, env) {
 }
 
 function needsGitHubToken(name, args) {
-  if (name === 'gh') return true
   if (name !== 'git') return false
   return ['fetch', 'ls-remote', 'push'].includes(args[0])
 }
@@ -53,26 +54,14 @@ function gitAuthEnv(token) {
   return env
 }
 
-function githubHost() {
-  const serverUrl = process.env['GITHUB_SERVER_URL'] || 'https://github.com'
-  return new URL(serverUrl).hostname
-}
-
-function ghAuthEnv(token) {
-  const host = githubHost()
-  if (host === 'github.com') return { GH_TOKEN: token }
-  return { GH_HOST: host, GH_ENTERPRISE_TOKEN: token }
-}
-
-// withGitHubToken wraps exec so that gh receives the token for the active GitHub host and git network commands receive the
-// request-scoped extraheader, while all other commands run with an unmodified environment.
+// withGitHubToken wraps exec so that git network commands receive the request-scoped extraheader, while all other
+// commands run with an unmodified environment.
 // Returns fn(exec) unchanged when no token is configured.
 function withGitHubToken(exec, token, fn) {
   if (!token) return fn(exec)
 
   const authenticatedExec = (name, args, options = {}) => {
     if (!needsGitHubToken(name, args)) return exec(name, args, options)
-    if (name === 'gh') return exec(name, args, withMergedEnv(options, ghAuthEnv(token)))
     return exec(name, args, withMergedEnv(options, gitAuthEnv(token)))
   }
 
@@ -80,7 +69,6 @@ function withGitHubToken(exec, token, fn) {
 }
 
 module.exports = {
-  ghAuthEnv,
   gitAuthEnv,
   needsGitHubToken,
   withGitHubToken,

@@ -2,7 +2,7 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ghAuthEnv, gitAuthEnv, needsGitHubToken, withGitHubToken } = require('./github-auth.js')
+const { gitAuthEnv, needsGitHubToken, withGitHubToken } = require('./github-auth.js')
 
 function makeExec() {
   const calls = []
@@ -19,12 +19,12 @@ function makeExec() {
   return exec
 }
 
-test('needsGitHubToken scopes auth to gh and git network commands', () => {
-  assert.equal(needsGitHubToken('gh', ['auth', 'status']), true)
+test('needsGitHubToken scopes auth to git network commands', () => {
   assert.equal(needsGitHubToken('git', ['fetch', 'origin']), true)
   assert.equal(needsGitHubToken('git', ['ls-remote', 'origin']), true)
   assert.equal(needsGitHubToken('git', ['push', 'origin']), true)
   assert.equal(needsGitHubToken('git', ['tag', '-a', 'v1.2.3']), false)
+  assert.equal(needsGitHubToken('gh', ['auth', 'status']), false)
   assert.equal(needsGitHubToken('gpg', ['--version']), false)
 })
 
@@ -83,27 +83,11 @@ test('gitAuthEnv appends after GIT_CONFIG_* already present in the environment',
   })
 })
 
-test('ghAuthEnv uses GH_TOKEN for github.com', () => {
-  withEnv({ GITHUB_SERVER_URL: 'https://github.com' }, () => {
-    assert.deepEqual(ghAuthEnv('secret-token'), { GH_TOKEN: 'secret-token' })
-  })
-})
-
-test('ghAuthEnv uses GH_HOST and GH_ENTERPRISE_TOKEN for enterprise hosts', () => {
-  withEnv({ GITHUB_SERVER_URL: 'https://company.ghe.com/' }, () => {
-    assert.deepEqual(ghAuthEnv('secret-token'), {
-      GH_HOST: 'company.ghe.com',
-      GH_ENTERPRISE_TOKEN: 'secret-token',
-    })
-  })
-})
-
-test('withGitHubToken injects token only into scoped child command environments', () => {
+test('withGitHubToken injects the extraheader only into git network commands', () => {
   const exec = makeExec()
 
   withEnv({ GITHUB_SERVER_URL: 'https://github.com', GIT_CONFIG_COUNT: undefined }, () => {
     withGitHubToken(exec, 'secret-token', (authExec) => {
-      authExec('gh', ['auth', 'status'])
       authExec('git', ['push', '--no-verify', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3'])
       authExec('git', ['tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3'])
       authExec('gpg', ['--version'])
@@ -112,8 +96,6 @@ test('withGitHubToken injects token only into scoped child command environments'
     const pushEnv = exec.optionsFor('git', 'push', '--no-verify', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3').env
     assert.equal(pushEnv.GIT_CONFIG_KEY_2, 'http.https://github.com/.extraheader')
     assert.equal(pushEnv.GIT_CONFIG_VALUE_2.startsWith('Authorization: Basic '), true)
-    assert.equal(exec.optionsFor('gh', 'auth', 'status').env.GH_TOKEN, 'secret-token')
-    assert.equal(exec.optionsFor('gh', 'auth', 'status').env.GH_ENTERPRISE_TOKEN, undefined)
     assert.equal(exec.optionsFor('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3').env, undefined)
     assert.equal(exec.optionsFor('gpg', '--version').env, undefined)
   })
@@ -124,19 +106,13 @@ test('withGitHubToken injects token only into scoped child command environments'
   )
 })
 
-test('withGitHubToken injects enterprise env for gh on enterprise hosts', () => {
+test('withGitHubToken builds the extraheader for the active enterprise host', () => {
   const exec = makeExec()
 
   withEnv({ GITHUB_SERVER_URL: 'https://company.ghe.com', GIT_CONFIG_COUNT: undefined }, () => {
     withGitHubToken(exec, 'secret-token', (authExec) => {
-      authExec('gh', ['release', 'view', 'v1.2.3'])
       authExec('git', ['ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v1.2.3'])
     })
-
-    const ghEnv = exec.optionsFor('gh', 'release', 'view', 'v1.2.3').env
-    assert.equal(ghEnv.GH_HOST, 'company.ghe.com')
-    assert.equal(ghEnv.GH_ENTERPRISE_TOKEN, 'secret-token')
-    assert.equal(ghEnv.GH_TOKEN, undefined)
 
     const gitEnv = exec.optionsFor('git', 'ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v1.2.3').env
     assert.equal(gitEnv.GIT_CONFIG_KEY_2, 'http.https://company.ghe.com/.extraheader')
