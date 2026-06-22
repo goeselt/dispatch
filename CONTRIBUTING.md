@@ -88,12 +88,12 @@ in focused modules:
 - `summary.js` for workflow output and failure guidance.
 - `tags.js` for tag validation.
 
-Inside `release.js`, keep new helpers close to their section:
+Inside `release.js`, keep new helpers close to their section (the `// Section` header comments match these names):
 
-- input parsing
-- release context guard
-- Git operations
-- release orchestration
+- Input parsing
+- Release context guard
+- Git command wrappers
+- Release orchestration
 
 When adding a new input, update all of these together:
 

@@ -7,6 +7,8 @@ const { parseAssets, parseBool, parseMakeLatest, runRelease } = require('./relea
 const { createClient } = require('./github-api.js')
 const { buildFailureSummary, buildStepSummary, escapeWorkflowCommand } = require('./summary.js')
 
+// GitHub Actions adapter helpers
+
 function input(name, fallback = '') {
   return process.env[`INPUT_${name.toUpperCase()}`] ?? fallback
 }
@@ -48,6 +50,8 @@ function exec(name, args, { allowFailure = false, input, env } = {}) {
     throw new Error(`${name} ${args.join(' ')}: ${stderr.trim() || stdout.trim() || err.message}`, { cause: err })
   }
 }
+
+// Entry point
 
 let inputs = {}
 

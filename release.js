@@ -93,7 +93,7 @@ function guardReleaseHead(exec, inputs) {
   )
 }
 
-// Git and GitHub CLI operations
+// Git command wrappers
 
 function configureGitUser(exec, name, email) {
   if (name) exec('git', ['config', 'user.name', name])

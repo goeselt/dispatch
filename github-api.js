@@ -14,6 +14,8 @@ const path = require('node:path')
 
 const { branchNameFromRef, hasReleaseContext } = require('./release-context.js')
 
+// Configuration
+
 const ASSET_CONTENT_TYPE = 'application/octet-stream'
 
 // GitHub rejects API requests without a User-Agent header (HTTP 403); Node's global fetch does not send an identifying
@@ -45,6 +47,8 @@ function retryDelayMs(attempt, retryAfterHeader) {
   return Math.max(headerMs, backoff + jitter)
 }
 
+// URL helpers
+
 // apiBaseUrl returns the REST API base for the active GitHub host without a trailing slash.
 // It fails closed when GITHUB_API_URL is missing rather than defaulting to api.github.com: every request carries the
 // token in an Authorization header, and silently falling back to the public host would transmit an Enterprise token to
@@ -68,6 +72,8 @@ function repoPath(repo) {
   }
   return `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`
 }
+
+// Authenticated request with retry
 
 // request issues an authenticated REST call. It returns { status, body } where body is parsed JSON when the response
 // carries a JSON content type, otherwise the raw text. A non-2xx status throws unless it is listed in allowStatuses,
@@ -137,8 +143,10 @@ async function request(token, method, url, options = {}) {
   }
 }
 
-// makeLatestField maps the action's make-latest policy to the REST `make_latest` enum, returning null to omit the
-// field. The decision mirrors the previous gh `--latest` flag handling:
+// Release policy
+
+// makeLatestField maps the action's make-latest policy to the REST `make_latest` enum. It always returns one of
+// "true" / "false" / "legacy":
 //   true            -> mark as Latest
 //   false           -> never Latest
 //   auto            -> let GitHub decide by date/semver (REST "legacy")
@@ -157,6 +165,8 @@ function makeLatestField(options = {}) {
   if (defaultBranch && refName && refName === defaultBranch) return 'legacy'
   return 'false'
 }
+
+// REST client
 
 // createClient binds a token to the release operations. Methods take the repository as "owner/name" because the REST
 // API has no remote-inference fallback the way gh did. The token is only validated when a method is actually called,
@@ -205,9 +215,12 @@ function createClient(token, requestOptions = {}) {
   async function createRelease(repo, tag, assets = [], options = {}) {
     const base = `${apiBaseUrl()}/repos/${repoPath(repo)}`
     const draft = assets.length > 0
-    const payload = { tag_name: tag, draft, generate_release_notes: true }
-    const latest = makeLatestField(options)
-    if (latest) payload.make_latest = latest
+    const payload = {
+      tag_name: tag,
+      draft,
+      generate_release_notes: true,
+      make_latest: makeLatestField(options),
+    }
 
     const created = await call('POST', `${base}/releases`, {
       headers: { 'Content-Type': 'application/json' },
