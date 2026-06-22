@@ -38,7 +38,7 @@ jobs:
 
       - id: intent
         name: Intent Release
-        uses: goeselt/intent@21b70d0a25a0aae8002ca2c7fb4f4b3ba604922e # v1.1.2
+        uses: goeselt/intent@b0f6cb890972394cb60a0f65cf866dc76a33fef4 # v1.1.5
         with:
           initial-version: '1.0.0'
 
@@ -50,7 +50,7 @@ jobs:
 
       - name: Commit Version
         if: steps.intent.outputs.release-needed == 'true'
-        uses: goeselt/scribe@c233f5828a9590d21e2af93d7f2d4cf6a81ac822 # v1.2.0
+        uses: goeselt/scribe@732387b7af0ebcabc4653253cb5865a31a3cd485 # v1.2.2
         with:
           files: package.json
           message: 'chore: release ${{ steps.intent.outputs.release-tag }}'
