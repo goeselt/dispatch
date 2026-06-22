@@ -84,20 +84,19 @@ function repoPath(repo) {
 // so callers can treat an expected 404 (no release for a tag) as data rather than an error.
 //
 // Transient failures (retryable HTTP statuses for any method, plus network/timeout failures for idempotent methods) are
-// retried up to maxAttempts with exponential backoff. timeoutMs aborts a stalled request so the retry can take over;
-// pass 0 to disable it for long-running transfers such as asset uploads. onRetry, when provided, is called before each
-// backoff with { method, status, attempt, maxAttempts, delayMs } so callers can surface that a retry is happening
-// (status is null for a network failure).
+// retried up to DEFAULT_MAX_ATTEMPTS times with exponential backoff. timeoutMs aborts a stalled request so the retry can
+// take over; pass 0 to disable it for long-running transfers such as asset uploads. onRetry, when provided, is called
+// before each backoff with { method, status, attempt, maxAttempts, delayMs } so callers can surface that a retry is
+// happening (status is null for a network failure).
 async function request(token, method, url, options = {}) {
-  const {
-    body,
-    headers,
-    allowStatuses = [],
-    timeoutMs = DEFAULT_TIMEOUT_MS,
-    maxAttempts = DEFAULT_MAX_ATTEMPTS,
-    sleep = defaultSleep,
-    onRetry,
-  } = options
+  const { body, headers, allowStatuses = [], timeoutMs = DEFAULT_TIMEOUT_MS, sleep = defaultSleep, onRetry } = options
+
+  // scheduleRetry waits out one backoff and notifies onRetry; status is null for a network-level retry.
+  const scheduleRetry = async (attempt, status, retryAfterHeader) => {
+    const delayMs = retryDelayMs(attempt, retryAfterHeader)
+    onRetry?.({ method, status, attempt, maxAttempts: DEFAULT_MAX_ATTEMPTS, delayMs })
+    await sleep(delayMs)
+  }
 
   for (let attempt = 1; ; attempt++) {
     let res
@@ -117,10 +116,8 @@ async function request(token, method, url, options = {}) {
     } catch (err) {
       // Network failure or timeout before any response. Retrying is only safe for idempotent methods; a POST might have
       // been applied server-side, so it fails fast to avoid a duplicate release or asset.
-      if (RETRYABLE_NETWORK_METHODS.has(method) && attempt < maxAttempts) {
-        const delayMs = retryDelayMs(attempt, null)
-        onRetry?.({ method, status: null, attempt, maxAttempts, delayMs })
-        await sleep(delayMs)
+      if (RETRYABLE_NETWORK_METHODS.has(method) && attempt < DEFAULT_MAX_ATTEMPTS) {
+        await scheduleRetry(attempt, null, null)
         continue
       }
       throw new Error(`${method} ${url}: ${err.message}`, { cause: err })
@@ -141,10 +138,8 @@ async function request(token, method, url, options = {}) {
       // retryable and sets the minimum wait.
       const retryAfter = res.headers.get('retry-after')
       const retryable = RETRYABLE_STATUSES.has(res.status) || retryAfter != null
-      if (retryable && attempt < maxAttempts) {
-        const delayMs = retryDelayMs(attempt, retryAfter)
-        onRetry?.({ method, status: res.status, attempt, maxAttempts, delayMs })
-        await sleep(delayMs)
+      if (retryable && attempt < DEFAULT_MAX_ATTEMPTS) {
+        await scheduleRetry(attempt, res.status, retryAfter)
         continue
       }
       const detail = parsed && parsed.message ? parsed.message : typeof parsed === 'string' ? parsed.trim() : ''
