@@ -34,7 +34,7 @@ test('parseSecretKeyFingerprint reads the imported secret key fingerprint', () =
   assert.equal(parseSecretKeyFingerprint(''), '')
 })
 
-test('setupSigning imports the GPG key and enables tag signing', () => {
+test('setupSigning imports the GPG key and pins it as the signing key', () => {
   const previousGnupgHome = process.env.GNUPGHOME
   const exec = makeExec(FINGERPRINT_RESPONSE)
 
@@ -44,7 +44,8 @@ test('setupSigning imports the GPG key and enables tag signing', () => {
   assert.ok(exec.called('gpg', '--import', '--batch'))
   assert.ok(exec.called('gpg', '--batch', '--list-secret-keys', '--with-colons', '--fingerprint'))
   assert.ok(exec.called('git', 'config', 'user.signingkey', 'ABCDEF1234567890'))
-  assert.ok(exec.called('git', 'config', 'tag.gpgsign', 'true'))
+  // Signing is requested explicitly via `git tag -s`, so no tag.gpgsign config is written.
+  assert.equal(exec.called('git', 'config', 'tag.gpgsign', 'true'), false)
   assert.ok(gnupgHome)
   assert.ok(fs.existsSync(gnupgHome))
 

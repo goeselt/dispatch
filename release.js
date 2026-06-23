@@ -140,9 +140,11 @@ function tagExists(exec, tag) {
   return remoteTagObjectId(exec, tag) !== ''
 }
 
-function createTag(exec, tag) {
+function createTag(exec, tag, sign = false) {
   validateTagName(tag)
-  exec('git', ['tag', '-a', tag, '-m', `Release ${tag}`])
+  // -s makes a GPG-signed tag; -a an unsigned annotated one. We pass the flag explicitly rather than rely on the
+  // tag.gpgsign config, whose effect on an explicit -a is git-version-dependent.
+  exec('git', ['tag', sign ? '-s' : '-a', tag, '-m', `Release ${tag}`])
   try {
     exec('git', ['push', '--no-verify', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
   } catch (err) {
@@ -156,12 +158,21 @@ function fetchTag(exec, tag) {
   exec('git', ['fetch', '--force', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
 }
 
-function updateFloatingTag(exec, floatingTag, releaseTag) {
+function updateFloatingTag(exec, floatingTag, releaseTag, sign = false) {
   if (!floatingTag) return false
   validateTagName(floatingTag)
   validateTagName(releaseTag)
   const expected = remoteTagObjectId(exec, floatingTag)
-  exec('git', ['tag', '-fa', floatingTag, `${releaseTag}^{}`, '-m', `Floating tag for ${releaseTag}`])
+  // Force-move the floating tag, signed (-s) or unsigned annotated (-a) to match the release tag.
+  exec('git', [
+    'tag',
+    '-f',
+    sign ? '-s' : '-a',
+    floatingTag,
+    `${releaseTag}^{}`,
+    '-m',
+    `Floating tag for ${releaseTag}`,
+  ])
   exec('git', [
     'push',
     '--no-verify',
@@ -201,8 +212,9 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
           `releasing from non-default branch ${inputs.releaseContext.refName} (allowed by allow-non-default-branch)`,
         )
       }
+      const sign = Boolean(inputs.signingKey)
       configureGitUser(releaseExec, inputs.gitUserName, inputs.gitUserEmail)
-      if (inputs.signingKey) {
+      if (sign) {
         cleanupSigning = setupSigning(releaseExec, inputs.signingKey)
         logInfo('tag signing enabled')
       }
@@ -211,12 +223,12 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
       let tagCreated = false
       if (tagExists(releaseExec, inputs.releaseTag)) {
         fetchTag(releaseExec, inputs.releaseTag)
-        verifyExistingReleaseTag(releaseExec, inputs.releaseTag, expectedReleaseSha, Boolean(inputs.signingKey))
+        verifyExistingReleaseTag(releaseExec, inputs.releaseTag, expectedReleaseSha, sign)
         logInfo(`tag ${inputs.releaseTag} already exists; reusing it`)
       } else if (inputs.createTag) {
-        createTag(releaseExec, inputs.releaseTag)
+        createTag(releaseExec, inputs.releaseTag, sign)
         tagCreated = true
-        logInfo(`created and pushed tag ${inputs.releaseTag}`)
+        logInfo(`created and pushed ${sign ? 'signed ' : ''}tag ${inputs.releaseTag}`)
       } else {
         throw new Error(`release tag ${inputs.releaseTag} does not exist and create-tag is false`)
       }
@@ -257,9 +269,9 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
         }
       }
 
-      const majorTagUpdated = updateFloatingTag(releaseExec, inputs.majorTag, inputs.releaseTag)
+      const majorTagUpdated = updateFloatingTag(releaseExec, inputs.majorTag, inputs.releaseTag, sign)
       if (majorTagUpdated) logInfo(`updated floating tag ${inputs.majorTag} -> ${inputs.releaseTag}`)
-      const minorTagUpdated = updateFloatingTag(releaseExec, inputs.minorTag, inputs.releaseTag)
+      const minorTagUpdated = updateFloatingTag(releaseExec, inputs.minorTag, inputs.releaseTag, sign)
       if (minorTagUpdated) logInfo(`updated floating tag ${inputs.minorTag} -> ${inputs.releaseTag}`)
 
       return {

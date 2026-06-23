@@ -18,9 +18,12 @@ function parseSecretKeyFingerprint(colonOutput) {
   return ''
 }
 
-// setupSigning imports the base64-encoded private key into a throwaway keyring and configures git to sign tags with it.
+// setupSigning imports the base64-encoded private key into a throwaway keyring and pins git's signing key to it.
 // It returns a cleanup function that restores GNUPGHOME and deletes the keyring;
 // the caller must invoke it once the release is done.
+// Signing is requested explicitly at tag-creation time via `git tag -s`, so no `tag.gpgsign` config is set here:
+// relying on `tag.gpgsign` to upgrade an explicit `git tag -a` is git-version-dependent and silently produced unsigned
+// tags on some runners. user.signingkey selects which imported key `-s` uses.
 //
 // GNUPGHOME is set on process.env on purpose: git spawns gpg itself when signing tags (`git tag -a`/`-fa`),
 // and that child must inherit GNUPGHOME to find the keyring.
@@ -51,7 +54,6 @@ function setupSigning(exec, signingKey) {
     const fingerprint = parseSecretKeyFingerprint(keys)
     if (!fingerprint) throw new Error('could not determine imported signing key fingerprint')
     exec('git', ['config', 'user.signingkey', fingerprint])
-    exec('git', ['config', 'tag.gpgsign', 'true'])
     return cleanup
   } catch (err) {
     cleanup()

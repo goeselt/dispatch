@@ -150,8 +150,31 @@ test('runRelease signs tags when signing-key is provided', async () => {
 
   assert.ok(exec.called('gpg', '--import', '--batch'), 'GPG key not imported')
   assert.ok(exec.called('git', 'config', 'user.signingkey', 'ABCDEF1234567890'), 'signing key not pinned')
-  assert.ok(exec.called('git', 'config', 'tag.gpgsign', 'true'), 'tag signing not enabled')
+  // The tag must be created with an explicit -s (signed), not -a; signing must not depend on tag.gpgsign config.
+  assert.ok(exec.called('git', 'tag', '-s', 'v1.2.3', '-m', 'Release v1.2.3'), 'tag was not created signed')
+  assert.equal(exec.called('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3'), false, 'tag must not be unsigned')
+  assert.equal(exec.called('git', 'config', 'tag.gpgsign', 'true'), false)
   assert.equal(process.env.GNUPGHOME, previousGnupgHome)
+})
+
+test('runRelease signs floating tags when signing-key is provided', async () => {
+  const exec = makeExec({
+    'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
+      stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
+    },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+  })
+
+  await runRelease(
+    inputs({ signingKey: Buffer.from('fake-gpg-key').toString('base64'), majorTag: 'v1' }),
+    exec,
+    makeApi(),
+  )
+
+  assert.ok(
+    exec.called('git', 'tag', '-f', '-s', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'),
+    'floating tag was not force-signed',
+  )
 })
 
 test('runRelease does not configure GPG when no signing-key is given', async () => {
@@ -447,7 +470,7 @@ test('runRelease fetches an existing release tag before updating floating tags',
   await runRelease(inputs({ majorTag: 'v1' }), exec, api)
 
   const fetchIdx = exec.calls.findIndex((c) => c[0] === 'git' && c[1] === 'fetch')
-  const floatingIdx = exec.calls.findIndex((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-fa')
+  const floatingIdx = exec.calls.findIndex((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-f' && c[3] === '-a')
   assert.ok(fetchIdx !== -1, 'release tag was not fetched')
   assert.ok(floatingIdx !== -1, 'floating tag was not updated')
   assert.ok(fetchIdx < floatingIdx, 'release tag must be fetched before updating floating tags')
@@ -503,7 +526,7 @@ test('runRelease fails on an existing draft release instead of reusing stale sta
 
   await assert.rejects(runRelease(inputs({ majorTag: 'v1' }), exec, api), /still a draft/)
   assert.equal(
-    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-fa'),
+    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-f'),
     false,
   )
 })
@@ -521,7 +544,7 @@ test('runRelease fails when release lookup fails for a non-404 reason', async ()
   await assert.rejects(runRelease(inputs({ majorTag: 'v1' }), exec, api), /HTTP 401/)
   assert.equal(api.called('createRelease'), false)
   assert.equal(
-    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-fa'),
+    exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag' && c[2] === '-f'),
     false,
   )
 })
@@ -577,7 +600,7 @@ test('runRelease uploads assets and updates floating tags', async () => {
   // Assets are passed as absolute paths resolved against the validating workspace, not process.cwd()-relative.
   assert.deepEqual(createCall[3], [path.join(dir, 'dist', 'a.zip')])
 
-  assert.equal(exec.called('git', 'tag', '-fa', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'), true)
+  assert.equal(exec.called('git', 'tag', '-f', '-a', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'), true)
   assert.equal(
     exec.called(
       'git',
@@ -680,9 +703,11 @@ test('runRelease updates floating tags after creating the release', async () => 
   await runRelease(inputs({ majorTag: 'v1' }), exec, api)
 
   const releaseIdx = trace.findIndex((e) => e[0] === 'api' && e[1] === 'createRelease')
-  const floatingIdx = trace.findIndex((e) => e[0] === 'exec' && e[1] === 'git' && e[2] === 'tag' && e[3] === '-fa')
+  const floatingIdx = trace.findIndex(
+    (e) => e[0] === 'exec' && e[1] === 'git' && e[2] === 'tag' && e[3] === '-f' && e[4] === '-a',
+  )
   assert.ok(releaseIdx !== -1, 'createRelease was not called')
-  assert.ok(floatingIdx !== -1, 'git tag -fa was not called')
+  assert.ok(floatingIdx !== -1, 'git tag -f -a was not called')
   assert.ok(releaseIdx < floatingIdx, 'floating tag must be updated after release is created')
 })
 
