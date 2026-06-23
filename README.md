@@ -61,20 +61,20 @@ whitespace, control characters, refspec syntax, `..`, or option-like values begi
 When provided, `major-tag` and `minor-tag` must match the semantic `release-tag`. For `v1.2.3`, the only matching
 floating tags are `v1` and `v1.2`.
 
-| Input                      | Default          | Description                                                                                     |
-| -------------------------- | ---------------- | ----------------------------------------------------------------------------------------------- |
-| `release-tag`              |                  | Release tag name, for example `v1.2.3`. **Required.**                                           |
-| `create-tag`               | `true`           | Create and push the release tag when it does not already exist.                                 |
-| `create-release`           | `true`           | Create the GitHub Release.                                                                      |
-| `allow-non-default-branch` | `false`          | Allow releases from a non-default branch. PR events and tag refs remain blocked.                |
-| `make-latest`              | `default-branch` | Controls GitHub's Latest marker: `default-branch`, `auto`, `true`, or `false`.                  |
-| `signing-key`              |                  | Base64-encoded GPG private key. When set, all annotated tags created by this action are signed. |
-| `assets`                   |                  | Newline-separated asset files or glob patterns to upload. Paths must exist; globs must match.   |
-| `major-tag`                |                  | Floating major tag to update, e.g. `v1`.                                                        |
-| `minor-tag`                |                  | Floating minor tag to update, e.g. `v1.2`.                                                      |
-| `github-token`             | token            | GitHub token used by `gh` and temporary Git auth for tag fetch/push operations.                 |
-| `git-user-name`            | actor            | `git user.name` for annotated tags.                                                             |
-| `git-user-email`           | actor            | `git user.email` for annotated tags.                                                            |
+| Input                      | Default                          | Description                                                                                     |
+| -------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `release-tag`              |                                  | Release tag name, for example `v1.2.3`. **Required.**                                           |
+| `create-tag`               | `true`                           | Create and push the release tag when it does not already exist.                                 |
+| `create-release`           | `true`                           | Create the GitHub Release.                                                                      |
+| `allow-non-default-branch` | `false`                          | Allow releases from a non-default branch. PR events and tag refs remain blocked.                |
+| `make-latest`              | `default-branch`                 | Controls GitHub's Latest marker: `default-branch`, `auto`, `true`, or `false`.                  |
+| `signing-key`              |                                  | Base64-encoded GPG private key. When set, all annotated tags created by this action are signed. |
+| `assets`                   |                                  | Newline-separated asset files or glob patterns to upload. Paths must exist; globs must match.   |
+| `major-tag`                |                                  | Floating major tag to update, e.g. `v1`.                                                        |
+| `minor-tag`                |                                  | Floating minor tag to update, e.g. `v1.2`.                                                      |
+| `github-token`             | token                            | GitHub token for GitHub REST API calls and Git tag fetch/push operations.                       |
+| `git-user-name`            | actor                            | `git user.name` for annotated tags.                                                             |
+| `git-user-email`           | <actor@users.noreply.github.com> | `git user.email` for annotated tags.                                                            |
 
 ## Outputs
 

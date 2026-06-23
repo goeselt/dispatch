@@ -147,6 +147,19 @@ function tagExists(exec, tag) {
   return remoteTagObjectId(exec, tag) !== ''
 }
 
+// assertTagSigned fails loudly if signing was requested but the freshly created tag carries no GPG signature, instead
+// of pushing and releasing an unsigned tag. `git tag -s` already aborts when gpg cannot sign, so this is a cheap
+// belt-and-suspenders check; its main value is making the signed state explicit and verifiable in the action log,
+// which a "Verified" badge on the host UI -- which depends on the public key being registered there -- does not.
+function assertTagSigned(exec, tag) {
+  const body = exec('git', ['cat-file', '-p', tag]).stdout
+  if (!body.includes('-----BEGIN PGP SIGNATURE-----')) {
+    throw new Error(
+      `signing-key was set but tag ${tag} has no GPG signature after creation. Check that the key is valid and that gpg can sign non-interactively on this runner.`,
+    )
+  }
+}
+
 function createTag(exec, tag, sign = false, identityArgs = []) {
   validateTagName(tag)
   // -s makes a GPG-signed tag; -a an unsigned annotated one. We pass the flag explicitly rather than rely on the
@@ -154,6 +167,7 @@ function createTag(exec, tag, sign = false, identityArgs = []) {
   // config per invocation so nothing is written to .git/config.
   exec('git', [...identityArgs, 'tag', sign ? '-s' : '-a', tag, '-m', `Release ${tag}`])
   try {
+    if (sign) assertTagSigned(exec, tag)
     exec('git', ['push', '--no-verify', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
   } catch (err) {
     exec('git', ['tag', '-d', tag], { allowFailure: true })
@@ -182,6 +196,7 @@ function updateFloatingTag(exec, floatingTag, releaseTag, sign = false, identity
     '-m',
     `Floating tag for ${releaseTag}`,
   ])
+  if (sign) assertTagSigned(exec, floatingTag)
   exec('git', [
     'push',
     '--no-verify',
@@ -193,6 +208,30 @@ function updateFloatingTag(exec, floatingTag, releaseTag, sign = false, identity
 }
 
 // Release orchestration
+
+// reportTagVerification asks the host whether the freshly signed tag verifies and surfaces the result. A correctly
+// signed tag can still be reported unverified -- most commonly reason "no_user", when the tagger identity does not match
+// the signing key's account. We warn but never roll back: the release is valid, only the verification badge is affected.
+// The check is best-effort; failing to query it is logged, not fatal.
+async function reportTagVerification(exec, api, repo, tag) {
+  let verification
+  try {
+    const tagSha = exec('git', ['rev-parse', `${tag}^{tag}`]).stdout.trim()
+    verification = await api.getTagVerification(repo, tagSha)
+  } catch (err) {
+    logInfo(`could not check signature verification for ${tag}: ${err.message}`)
+    return
+  }
+  if (verification.verified) {
+    logInfo(`signature on ${tag} verified by the host`)
+    return
+  }
+  const reason = verification.reason || 'unknown'
+  logInfo(`signature on ${tag} is present but the host did not verify it (reason: ${reason})`)
+  writeWarning(
+    `tag ${tag} is signed but the host reports it as unverified (reason: ${reason}). The tagger identity likely does not match the signing key; set git-user-name/git-user-email to an identity on the key and register the key's public part with the signing account.`,
+  )
+}
 
 // runRelease orchestrates the release. Git operations run synchronously through exec; the GitHub REST operations
 // (auth check, release lookup, release creation with asset upload) run through the injected async api client, so the
@@ -241,10 +280,14 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
       } else if (inputs.createTag) {
         createTag(releaseExec, inputs.releaseTag, sign, identityArgs)
         tagCreated = true
-        logInfo(`created and pushed ${sign ? 'signed ' : ''}tag ${inputs.releaseTag}`)
+        logInfo(`created and pushed tag ${inputs.releaseTag}${sign ? ' (signed)' : ''}`)
       } else {
         throw new Error(`release tag ${inputs.releaseTag} does not exist and create-tag is false`)
       }
+
+      // For a newly signed tag, surface whether the host could attribute the signature -- a valid signature can still
+      // read as unverified (e.g. reason "no_user"). This only warns; the release is kept.
+      if (sign && tagCreated) await reportTagVerification(releaseExec, api, repo, inputs.releaseTag)
 
       let releaseCreated = false
       let releaseUrl = ''

@@ -120,8 +120,23 @@ with `git verify-tag <tag>` after importing your public key.
 ```
 
 If `signing-key` is set and the concrete release tag already exists, dispatch verifies the existing tag with
-`git verify-tag` before reusing it. The key is imported into a temporary `GNUPGHOME` pinned to the imported key
-fingerprint; the temporary keyring is removed before the action exits.
+`git verify-tag` before reusing it. The key is imported into a temporary `GNUPGHOME`, used per `git tag -s` invocation,
+and removed before the action exits; nothing is written to the checkout's `.git/config`.
+
+After creating a signed tag, dispatch queries the host's signature verification and warns (without rolling back the
+release) if it reads as unverified. The most common reason is `no_user`: the tag is correctly signed, but the tagger
+identity does not match the signing key, so the host cannot attribute it. To get a verified badge, set `git-user-name`
+and `git-user-email` to an identity associated with the key, and register the key's public part with the account that
+owns the release:
+
+```yaml
+- uses: goeselt/dispatch@v1
+  with:
+    release-tag: ${{ steps.version.outputs.release-tag }}
+    signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
+    git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
+    git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}
+```
 
 See [Signing Key Setup](signing-key.md) for a Debian-based setup guide.
 

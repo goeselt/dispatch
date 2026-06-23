@@ -182,6 +182,31 @@ test('createRelease without assets publishes directly and returns the URL', asyn
   )
 })
 
+test('getTagVerification returns the host verification for a tag object', async () => {
+  await withApiUrl('https://api.github.com', () =>
+    withFetch(
+      () =>
+        fakeResponse({ status: 200, body: { tag: 'v1.2.3', verification: { verified: false, reason: 'no_user' } } }),
+      async (calls) => {
+        const verification = await createClient('secret').getTagVerification('owner/name', 'deadbeef')
+        assert.deepEqual(verification, { verified: false, reason: 'no_user' })
+        assert.equal(calls[0].url, 'https://api.github.com/repos/owner/name/git/tags/deadbeef')
+      },
+    ),
+  )
+})
+
+test('getTagVerification returns an empty object when the response has no verification', async () => {
+  await withApiUrl('https://api.github.com', () =>
+    withFetch(
+      () => fakeResponse({ status: 200, body: { tag: 'v1.2.3' } }),
+      async () => {
+        assert.deepEqual(await createClient('secret').getTagVerification('owner/name', 'deadbeef'), {})
+      },
+    ),
+  )
+})
+
 test('createRelease with assets drafts, uploads, then publishes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-api-'))
   const assetPath = path.join(dir, 'artifact.bin')
