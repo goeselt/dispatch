@@ -36,6 +36,12 @@ request-scoped `http.<server>.extraheader` injected through Git's environment-ba
 wins for the invocation without modifying stored credentials. Tag pushes use `--no-verify` so local `pre-push` hooks
 cannot observe that token environment.
 
+The same "leave no trace" rule applies to the tagger identity and signing key: `git-user-name`, `git-user-email`, and
+the imported key fingerprint are passed per `git tag` invocation via `-c user.name=` / `-c user.email=` /
+`-c user.signingkey=`, never through `git config`. So dispatch writes nothing to the checkout's `.git/config` and leaves
+no dangling identity or signing key for later steps in the job. These values are non-secret, so unlike the token they
+are safe on the command line; the token stays in the environment because argv is visible to other processes.
+
 ## Release Model
 
 Dispatch owns a narrow job: given a concrete `release-tag`, create or reuse the tag, create or reuse the GitHub Release,
@@ -69,8 +75,9 @@ to regular files inside the checked-out workspace. Keep these checks boring and 
 for clever parsing.
 
 When `signing-key` is set, existing concrete release tags must pass `git verify-tag` before they are reused. New release
-tags are signed through a temporary `GNUPGHOME`; Git is pinned to the imported key fingerprint, and the temporary
-keyring is removed before the action exits.
+tags are created with an explicit `git tag -s` (not the git-version-dependent `tag.gpgsign` upgrade of `-a`), keyed by
+the imported fingerprint passed via `-c user.signingkey=`. The key is imported into a temporary `GNUPGHOME` that is
+removed before the action exits.
 
 REST release calls are bound to `GITHUB_REPOSITORY`, and the release auth check (`GET /repos/{owner}/{repo}`) happens
 before the concrete tag is created or pushed.
