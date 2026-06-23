@@ -48,11 +48,11 @@ inputs:
     required: false
     default: ${{ github.token }}
   git-user-name:
-    description: 'Git user.name used for annotated tags.'
+    description: 'Git user.name used for annotated tags. Defaults to the triggering actor (GITHUB_ACTOR), or github-actions[bot].'
     required: false
     default: ''
   git-user-email:
-    description: 'Git user.email used for annotated tags.'
+    description: 'Git user.email used for annotated tags. Defaults to the actor noreply address (<actor>@users.noreply.github.com).'
     required: false
     default: ''
 

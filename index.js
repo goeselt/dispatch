@@ -9,8 +9,11 @@ const { buildFailureSummary, buildStepSummary, escapeWorkflowCommand, logInfo } 
 
 // GitHub Actions adapter helpers
 
+// input reads an action input. GitHub Actions sets INPUT_<NAME> to an empty string for any input declared with an empty
+// default, so an absent input arrives as '' rather than undefined. We treat empty as "not provided" (|| not ??) so a
+// caller-supplied fallback -- such as the bot identity for git-user-name/email -- actually applies.
 function input(name, fallback = '') {
-  return process.env[`INPUT_${name.toUpperCase()}`] ?? fallback
+  return process.env[`INPUT_${name.toUpperCase()}`] || fallback
 }
 
 function setOutput(name, value) {
@@ -103,9 +106,15 @@ async function main() {
   )
 }
 
-main().catch((err) => {
-  appendStepSummary(buildFailureSummary(err, inputs))
-  logInfo(`release failed: ${err.message}`)
-  process.stdout.write(`::error title=Dispatch::${escapeWorkflowCommand(err.message)}\n`)
-  process.exit(1)
-})
+// Run only when invoked directly (the action entry point), so tests can require this file for its helpers without
+// triggering a release.
+if (require.main === module) {
+  main().catch((err) => {
+    appendStepSummary(buildFailureSummary(err, inputs))
+    logInfo(`release failed: ${err.message}`)
+    process.stdout.write(`::error title=Dispatch::${escapeWorkflowCommand(err.message)}\n`)
+    process.exit(1)
+  })
+}
+
+module.exports = { input }
