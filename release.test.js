@@ -149,11 +149,17 @@ test('runRelease signs tags when signing-key is provided', async () => {
   await runRelease(inputs({ signingKey: Buffer.from('fake-gpg-key').toString('base64') }), exec, makeApi())
 
   assert.ok(exec.called('gpg', '--import', '--batch'), 'GPG key not imported')
-  assert.ok(exec.called('git', 'config', 'user.signingkey', 'ABCDEF1234567890'), 'signing key not pinned')
-  // The tag must be created with an explicit -s (signed), not -a; signing must not depend on tag.gpgsign config.
-  assert.ok(exec.called('git', 'tag', '-s', 'v1.2.3', '-m', 'Release v1.2.3'), 'tag was not created signed')
-  assert.equal(exec.called('git', 'tag', '-a', 'v1.2.3', '-m', 'Release v1.2.3'), false, 'tag must not be unsigned')
-  assert.equal(exec.called('git', 'config', 'tag.gpgsign', 'true'), false)
+  // The tag is created with an explicit -s (signed), and the signing key is supplied per invocation via -c rather than
+  // written to .git/config. Signing must not depend on tag.gpgsign.
+  assert.ok(
+    exec.called('git', '-c', 'user.signingkey=ABCDEF1234567890', 'tag', '-s', 'v1.2.3', '-m', 'Release v1.2.3'),
+    'tag was not signed with a per-invocation signing key',
+  )
+  assert.equal(
+    exec.calls.some((call) => call[0] === 'git' && call[1] === 'config'),
+    false,
+    'signing must not persist anything to git config',
+  )
   assert.equal(process.env.GNUPGHOME, previousGnupgHome)
 })
 
@@ -172,8 +178,49 @@ test('runRelease signs floating tags when signing-key is provided', async () => 
   )
 
   assert.ok(
-    exec.called('git', 'tag', '-f', '-s', 'v1', 'v1.2.3^{}', '-m', 'Floating tag for v1.2.3'),
+    exec.called(
+      'git',
+      '-c',
+      'user.signingkey=ABCDEF1234567890',
+      'tag',
+      '-f',
+      '-s',
+      'v1',
+      'v1.2.3^{}',
+      '-m',
+      'Floating tag for v1.2.3',
+    ),
     'floating tag was not force-signed',
+  )
+})
+
+test('runRelease applies the git identity per invocation and never writes to git config', async () => {
+  const exec = makeExec({
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+  })
+
+  await runRelease(inputs({ gitUserName: 'github-actions[bot]', gitUserEmail: 'bot@example.com' }), exec, makeApi())
+
+  // Identity rides on the tag command as -c flags, leaving the checkout's .git/config untouched for later steps.
+  assert.ok(
+    exec.called(
+      'git',
+      '-c',
+      'user.name=github-actions[bot]',
+      '-c',
+      'user.email=bot@example.com',
+      'tag',
+      '-a',
+      'v1.2.3',
+      '-m',
+      'Release v1.2.3',
+    ),
+    'identity was not passed per invocation',
+  )
+  assert.equal(
+    exec.calls.some((call) => call[0] === 'git' && call[1] === 'config'),
+    false,
+    'dispatch must not write to .git/config',
   )
 })
 

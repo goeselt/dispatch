@@ -34,18 +34,22 @@ test('parseSecretKeyFingerprint reads the imported secret key fingerprint', () =
   assert.equal(parseSecretKeyFingerprint(''), '')
 })
 
-test('setupSigning imports the GPG key and pins it as the signing key', () => {
+test('setupSigning imports the GPG key and returns its fingerprint without touching git config', () => {
   const previousGnupgHome = process.env.GNUPGHOME
   const exec = makeExec(FINGERPRINT_RESPONSE)
 
-  const cleanup = setupSigning(exec, Buffer.from('fake-gpg-key').toString('base64'))
+  const { cleanup, fingerprint } = setupSigning(exec, Buffer.from('fake-gpg-key').toString('base64'))
   const gnupgHome = process.env.GNUPGHOME
 
   assert.ok(exec.called('gpg', '--import', '--batch'))
   assert.ok(exec.called('gpg', '--batch', '--list-secret-keys', '--with-colons', '--fingerprint'))
-  assert.ok(exec.called('git', 'config', 'user.signingkey', 'ABCDEF1234567890'))
-  // Signing is requested explicitly via `git tag -s`, so no tag.gpgsign config is written.
-  assert.equal(exec.called('git', 'config', 'tag.gpgsign', 'true'), false)
+  assert.equal(fingerprint, 'ABCDEF1234567890')
+  // The signing key is applied per `git tag -s` invocation via -c, so setupSigning writes nothing to .git/config.
+  assert.equal(
+    exec.calls.some((call) => call[0] === 'git' && call[1] === 'config'),
+    false,
+    'setupSigning must not write to git config',
+  )
   assert.ok(gnupgHome)
   assert.ok(fs.existsSync(gnupgHome))
 
@@ -58,7 +62,7 @@ test('setupSigning passes the key only over stdin, never via argv', () => {
   const secret = Buffer.from('fake-gpg-key').toString('base64')
   const exec = makeExec(FINGERPRINT_RESPONSE)
 
-  const cleanup = setupSigning(exec, secret)
+  const { cleanup } = setupSigning(exec, secret)
   try {
     // The base64 key must never appear as a command-line argument.
     assert.equal(
@@ -78,7 +82,7 @@ test('setupSigning cleanup is idempotent', () => {
   const previousGnupgHome = process.env.GNUPGHOME
   const exec = makeExec(FINGERPRINT_RESPONSE)
 
-  const cleanup = setupSigning(exec, Buffer.from('fake-gpg-key').toString('base64'))
+  const { cleanup } = setupSigning(exec, Buffer.from('fake-gpg-key').toString('base64'))
   const gnupgHome = process.env.GNUPGHOME
 
   cleanup()

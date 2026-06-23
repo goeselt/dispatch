@@ -18,14 +18,13 @@ function parseSecretKeyFingerprint(colonOutput) {
   return ''
 }
 
-// setupSigning imports the base64-encoded private key into a throwaway keyring and pins git's signing key to it.
-// It returns a cleanup function that restores GNUPGHOME and deletes the keyring;
-// the caller must invoke it once the release is done.
-// Signing is requested explicitly at tag-creation time via `git tag -s`, so no `tag.gpgsign` config is set here:
-// relying on `tag.gpgsign` to upgrade an explicit `git tag -a` is git-version-dependent and silently produced unsigned
-// tags on some runners. user.signingkey selects which imported key `-s` uses.
+// setupSigning imports the base64-encoded private key into a throwaway keyring and returns { cleanup, fingerprint }.
+// cleanup restores GNUPGHOME and deletes the keyring; the caller must invoke it once the release is done.
+// It writes nothing to git config: the caller passes the returned fingerprint to `git tag -s` via a per-invocation
+// `-c user.signingkey=...`, so no signing config persists in the checkout. Signing is requested explicitly with `-s`
+// (not the git-version-dependent `tag.gpgsign` upgrade of `-a`).
 //
-// GNUPGHOME is set on process.env on purpose: git spawns gpg itself when signing tags (`git tag -a`/`-fa`),
+// GNUPGHOME is set on process.env on purpose: git spawns gpg itself when signing tags (`git tag -s`),
 // and that child must inherit GNUPGHOME to find the keyring.
 // Scoping it per command would not reach git's internal gpg invocation.
 // GNUPGHOME is a path, not a secret, so this carries no leak risk;
@@ -53,8 +52,7 @@ function setupSigning(exec, signingKey) {
     const keys = exec('gpg', ['--batch', '--list-secret-keys', '--with-colons', '--fingerprint']).stdout
     const fingerprint = parseSecretKeyFingerprint(keys)
     if (!fingerprint) throw new Error('could not determine imported signing key fingerprint')
-    exec('git', ['config', 'user.signingkey', fingerprint])
-    return cleanup
+    return { cleanup, fingerprint }
   } catch (err) {
     cleanup()
     throw err

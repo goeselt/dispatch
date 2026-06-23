@@ -104,9 +104,16 @@ function guardReleaseHead(exec, inputs) {
 
 // Git command wrappers
 
-function configureGitUser(exec, name, email) {
-  if (name) exec('git', ['config', 'user.name', name])
-  if (email) exec('git', ['config', 'user.email', email])
+// gitIdentityArgs builds per-invocation `-c` config for the tagger identity and, when signing, the signing key. Using
+// `-c` keeps these out of the checkout's persisted `.git/config`, so they leave no trace for later steps in the job --
+// the same "request-scoped, never persisted" property as the token. The values are non-secret (a name, an email, a key
+// fingerprint), so unlike the token they are safe to pass on the command line rather than through the environment.
+function gitIdentityArgs(name, email, signingKeyFingerprint) {
+  const args = []
+  if (name) args.push('-c', `user.name=${name}`)
+  if (email) args.push('-c', `user.email=${email}`)
+  if (signingKeyFingerprint) args.push('-c', `user.signingkey=${signingKeyFingerprint}`)
+  return args
 }
 
 function remoteTagObjectId(exec, tag) {
@@ -140,11 +147,12 @@ function tagExists(exec, tag) {
   return remoteTagObjectId(exec, tag) !== ''
 }
 
-function createTag(exec, tag, sign = false) {
+function createTag(exec, tag, sign = false, identityArgs = []) {
   validateTagName(tag)
   // -s makes a GPG-signed tag; -a an unsigned annotated one. We pass the flag explicitly rather than rely on the
-  // tag.gpgsign config, whose effect on an explicit -a is git-version-dependent.
-  exec('git', ['tag', sign ? '-s' : '-a', tag, '-m', `Release ${tag}`])
+  // tag.gpgsign config, whose effect on an explicit -a is git-version-dependent. identityArgs carry the tagger/signing
+  // config per invocation so nothing is written to .git/config.
+  exec('git', [...identityArgs, 'tag', sign ? '-s' : '-a', tag, '-m', `Release ${tag}`])
   try {
     exec('git', ['push', '--no-verify', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
   } catch (err) {
@@ -158,13 +166,14 @@ function fetchTag(exec, tag) {
   exec('git', ['fetch', '--force', 'origin', `refs/tags/${tag}:refs/tags/${tag}`])
 }
 
-function updateFloatingTag(exec, floatingTag, releaseTag, sign = false) {
+function updateFloatingTag(exec, floatingTag, releaseTag, sign = false, identityArgs = []) {
   if (!floatingTag) return false
   validateTagName(floatingTag)
   validateTagName(releaseTag)
   const expected = remoteTagObjectId(exec, floatingTag)
   // Force-move the floating tag, signed (-s) or unsigned annotated (-a) to match the release tag.
   exec('git', [
+    ...identityArgs,
     'tag',
     '-f',
     sign ? '-s' : '-a',
@@ -213,11 +222,15 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
         )
       }
       const sign = Boolean(inputs.signingKey)
-      configureGitUser(releaseExec, inputs.gitUserName, inputs.gitUserEmail)
+      let signingFingerprint = ''
       if (sign) {
-        cleanupSigning = setupSigning(releaseExec, inputs.signingKey)
+        const signing = setupSigning(releaseExec, inputs.signingKey)
+        cleanupSigning = signing.cleanup
+        signingFingerprint = signing.fingerprint
         logInfo('tag signing enabled')
       }
+      // Tagger identity and signing key are applied per `git tag` invocation via -c, never persisted to .git/config.
+      const identityArgs = gitIdentityArgs(inputs.gitUserName, inputs.gitUserEmail, signingFingerprint)
       if (inputs.createRelease) await api.checkAuth(repo)
 
       let tagCreated = false
@@ -226,7 +239,7 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
         verifyExistingReleaseTag(releaseExec, inputs.releaseTag, expectedReleaseSha, sign)
         logInfo(`tag ${inputs.releaseTag} already exists; reusing it`)
       } else if (inputs.createTag) {
-        createTag(releaseExec, inputs.releaseTag, sign)
+        createTag(releaseExec, inputs.releaseTag, sign, identityArgs)
         tagCreated = true
         logInfo(`created and pushed ${sign ? 'signed ' : ''}tag ${inputs.releaseTag}`)
       } else {
@@ -269,9 +282,9 @@ async function runRelease(inputs, exec, api, cwd = process.cwd()) {
         }
       }
 
-      const majorTagUpdated = updateFloatingTag(releaseExec, inputs.majorTag, inputs.releaseTag, sign)
+      const majorTagUpdated = updateFloatingTag(releaseExec, inputs.majorTag, inputs.releaseTag, sign, identityArgs)
       if (majorTagUpdated) logInfo(`updated floating tag ${inputs.majorTag} -> ${inputs.releaseTag}`)
-      const minorTagUpdated = updateFloatingTag(releaseExec, inputs.minorTag, inputs.releaseTag, sign)
+      const minorTagUpdated = updateFloatingTag(releaseExec, inputs.minorTag, inputs.releaseTag, sign, identityArgs)
       if (minorTagUpdated) logInfo(`updated floating tag ${inputs.minorTag} -> ${inputs.releaseTag}`)
 
       return {
