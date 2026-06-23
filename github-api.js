@@ -248,7 +248,15 @@ function createClient(token, requestOptions = {}) {
     return release.html_url || ''
   }
 
-  return { checkAuth, getReleaseByTag, createRelease }
+  // getTagVerification returns the host's signature verification for an annotated tag object, e.g.
+  // { verified: false, reason: 'no_user' }. tagSha is the tag object OID (`git rev-parse <tag>^{tag}`). It lets the
+  // caller report whether a signed tag will show as verified, without changing the release.
+  async function getTagVerification(repo, tagSha) {
+    const { body } = await call('GET', `${apiBaseUrl()}/repos/${repoPath(repo)}/git/tags/${encodeURIComponent(tagSha)}`)
+    return body.verification || {}
+  }
+
+  return { checkAuth, getReleaseByTag, createRelease, getTagVerification }
 }
 
 module.exports = {

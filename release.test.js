@@ -76,6 +76,12 @@ function makeApi(overrides = {}, trace = null) {
           : `https://github.com/org/repo/releases/tag/${tag}`,
       )
     },
+    getTagVerification: (repo, tagSha) => {
+      record(['getTagVerification', repo, tagSha])
+      return Promise.resolve(
+        overrides.getTagVerification ? overrides.getTagVerification(repo, tagSha) : { verified: true },
+      )
+    },
   }
   api.calls = calls
   api.called = (method) => calls.some((entry) => entry[0] === method)
@@ -137,6 +143,10 @@ test('createTag deletes a local tag when pushing it fails', () => {
 
 // Release setup orchestration
 
+// A tag object body as `git cat-file -p` prints it, including the GPG signature block the signed-tag self-check looks for.
+const SIGNED_TAG_BODY =
+  'object 0000\ntype commit\ntag t\n\nmsg\n-----BEGIN PGP SIGNATURE-----\n\nsig\n-----END PGP SIGNATURE-----\n'
+
 test('runRelease signs tags when signing-key is provided', async () => {
   const previousGnupgHome = process.env.GNUPGHOME
   const exec = makeExec({
@@ -144,6 +154,7 @@ test('runRelease signs tags when signing-key is provided', async () => {
       stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
     },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+    'git\x00cat-file\x00-p\x00v1.2.3': { stdout: SIGNED_TAG_BODY },
   })
 
   await runRelease(inputs({ signingKey: Buffer.from('fake-gpg-key').toString('base64') }), exec, makeApi())
@@ -169,6 +180,8 @@ test('runRelease signs floating tags when signing-key is provided', async () => 
       stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
     },
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+    'git\x00cat-file\x00-p\x00v1.2.3': { stdout: SIGNED_TAG_BODY },
+    'git\x00cat-file\x00-p\x00v1': { stdout: SIGNED_TAG_BODY },
   })
 
   await runRelease(
@@ -192,6 +205,59 @@ test('runRelease signs floating tags when signing-key is provided', async () => 
     ),
     'floating tag was not force-signed',
   )
+})
+
+test('runRelease fails loudly when signing was requested but the created tag is not signed', async () => {
+  const exec = makeExec({
+    'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
+      stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
+    },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+    // The tag object carries no signature block, so the self-check must reject rather than push an unsigned tag.
+    'git\x00cat-file\x00-p\x00v1.2.3': { stdout: 'object 0000\ntype commit\ntag t\n\nmsg\n' },
+  })
+
+  await assert.rejects(
+    runRelease(inputs({ signingKey: Buffer.from('fake-gpg-key').toString('base64') }), exec, makeApi()),
+    /no GPG signature/,
+  )
+  assert.equal(
+    exec.calls.some((c) => c[0] === 'git' && c[1] === 'push'),
+    false,
+    'an unsigned tag must not be pushed',
+  )
+})
+
+test('runRelease warns but keeps the release when a signed tag is reported unverified', async () => {
+  const exec = makeExec({
+    'gpg\x00--batch\x00--list-secret-keys\x00--with-colons\x00--fingerprint': {
+      stdout: 'sec:::::::::\nfpr:::::::::ABCDEF1234567890:\n',
+    },
+    'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
+    'git\x00cat-file\x00-p\x00v1.2.3': { stdout: SIGNED_TAG_BODY },
+    'git\x00rev-parse\x00v1.2.3^{tag}': { stdout: 'deadbeefcafe\n' },
+  })
+  const api = makeApi({ getTagVerification: () => ({ verified: false, reason: 'no_user' }) })
+
+  const written = []
+  const origWrite = process.stdout.write.bind(process.stdout)
+  process.stdout.write = (msg) => {
+    written.push(msg)
+    return true
+  }
+  let result
+  try {
+    result = await runRelease(inputs({ signingKey: Buffer.from('fake-gpg-key').toString('base64') }), exec, api)
+  } finally {
+    process.stdout.write = origWrite
+  }
+
+  // The tag and release are kept -- a no_user signature is a warning, never a rollback.
+  assert.equal(result.tagCreated, true)
+  assert.equal(result.releaseCreated, true)
+  assert.equal(exec.called('git', 'tag', '-d', 'v1.2.3'), false, 'a published tag must not be deleted')
+  assert.deepEqual(api.callFor('getTagVerification'), ['getTagVerification', undefined, 'deadbeefcafe'])
+  assert.match(written.join(''), /::warning.*unverified.*no_user/)
 })
 
 test('runRelease applies the git identity per invocation and never writes to git config', async () => {
