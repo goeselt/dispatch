@@ -79,6 +79,13 @@ tags are created with an explicit `git tag -s` (not the git-version-dependent `t
 the imported fingerprint passed via `-c user.signingkey=`. The key is imported into a temporary `GNUPGHOME` that is
 removed before the action exits.
 
+Signing integrity is checked at two points. Before pushing, `assertTagSigned` reads the tag object with
+`git cat-file -p` and throws if no `BEGIN PGP SIGNATURE` block is present; this catches config mismatches before
+anything reaches the remote. After the push and release creation, `reportTagVerification` queries the host's signature
+verification endpoint (`GET /git/tags/{sha}`) and emits a `::warning` if the tag is reported as unverified. The most
+common reason is `no_user`: the tag is correctly signed but the tagger identity does not match the signing key's
+registered account. The release is never rolled back in this case -- `reportTagVerification` is informational only.
+
 REST release calls are bound to `GITHUB_REPOSITORY`, and the release auth check (`GET /repos/{owner}/{repo}`) happens
 before the concrete tag is created or pushed.
 
