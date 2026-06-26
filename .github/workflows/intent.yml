@@ -26,6 +26,6 @@ jobs:
       pull-requests: write
     steps:
       - name: Validate Intent
-        uses: goeselt/intent@b0f6cb890972394cb60a0f65cf866dc76a33fef4 # v1.1.5
+        uses: goeselt/intent@2dd369992f542d83bdc27975b078e1242eb07190 # v1.2.2
         with:
           pr-comment: true
