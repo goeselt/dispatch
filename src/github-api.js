@@ -20,7 +20,7 @@ const ASSET_CONTENT_TYPE = 'application/octet-stream'
 
 // GitHub rejects API requests without a User-Agent header (HTTP 403); Node's global fetch does not send an identifying
 // one. GitHub recommends the application name. https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api
-const USER_AGENT = 'goeselt-dispatch'
+const USER_AGENT = 'open-dispatch'
 
 // Transient-failure handling. Release actions are network-heavy and reruns are expensive, so we retry transient
 // failures with exponential backoff, mirroring the retry/throttling plugins that established release actions rely on.
@@ -30,7 +30,9 @@ const RETRY_BASE_MS = 500
 // Upper bound on a single backoff. It caps a hostile or buggy Retry-After (e.g. "Retry-After: 999999") so it cannot
 // stall the run for an unbounded time.
 const RETRY_MAX_DELAY_MS = 60_000
-// Statuses that mean the request was not applied, so retrying is safe for any method.
+// Statuses retried for any method. 429 and 503 mean the request was not applied. 500/502/504 are ambiguous for POST
+// (the write may have been applied server-side); the residual risk is a duplicate release, which fails with 422 for an
+// already-published tag and otherwise leaves a duplicate draft visible in the releases UI.
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 // Methods whose retry is safe after an ambiguous network failure. POST is excluded: a dropped connection might have
 // created a release or asset server-side, and a blind retry would duplicate it.
@@ -218,6 +220,9 @@ function createClient(token, requestOptions = {}) {
   // createRelease creates the release for an already-pushed tag, uploads assets, and returns the release URL.
   // When assets are present the release is created as a draft, assets are uploaded, then it is published. This mirrors
   // the gh draft->upload->publish flow: with release immutability enabled, assets cannot be added after publish.
+  // When an upload or the publish fails, the draft is deleted (best-effort) before rethrowing: the by-tag lookup only
+  // returns published releases, so a leftover draft would be invisible to a rerun -- drafts with partial assets would
+  // accumulate, and a maintainer could publish one by mistake.
   async function createRelease(repo, tag, assets = [], options = {}) {
     const base = `${apiBaseUrl()}/repos/${repoPath(repo)}`
     const draft = assets.length > 0
@@ -233,19 +238,25 @@ function createClient(token, requestOptions = {}) {
       body: JSON.stringify(payload),
     })
     const release = created.body
+    if (!draft) return release.html_url || ''
 
-    for (const asset of assets) {
-      await uploadAsset(release.upload_url, asset)
-    }
-
-    if (draft) {
+    try {
+      for (const asset of assets) {
+        await uploadAsset(release.upload_url, asset)
+      }
       const published = await call('PATCH', `${base}/releases/${release.id}`, {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ draft: false }),
       })
       return published.body.html_url || release.html_url || ''
+    } catch (err) {
+      try {
+        await call('DELETE', `${base}/releases/${release.id}`)
+      } catch {
+        // Cleanup is best-effort; the original failure is what the user must see.
+      }
+      throw err
     }
-    return release.html_url || ''
   }
 
   // getTagVerification returns the host's signature verification for an annotated tag object, e.g.

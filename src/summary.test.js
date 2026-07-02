@@ -125,6 +125,15 @@ test('failureNextStep maps common release failures to recovery guidance', () => 
   )
   assert.match(failureNextStep(new Error('could not read Username for https://github.com')), /github-token/)
   assert.match(failureNextStep(new Error('dispatch cannot create releases from pull request events')), /default branch/)
+  // GitHub answers 404 for a private repository the token cannot see, so it needs the same guidance as 401/403.
+  assert.match(
+    failureNextStep(new Error('GET https://api.github.com/repos/org/repo: HTTP 404 Not Found')),
+    /repository exists and that the github-token/,
+  )
+  assert.match(
+    failureNextStep(new Error('asset pattern dist/** uses a recursive glob (**), which is not supported.')),
+    /Replace \*\* with single-segment globs/,
+  )
 })
 
 test('logInfo prefixes a single line and cannot be broken out of', () => {

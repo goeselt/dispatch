@@ -479,7 +479,14 @@ test('runRelease uses github-token for git tag operations', async () => {
     'git\x00ls-remote\x00--tags\x00--refs\x00origin\x00refs/tags/v1.2.3': { stdout: '' },
   })
 
-  await runRelease(inputs({ githubToken: 'secret-token' }), exec, makeApi())
+  const previousServerUrl = process.env.GITHUB_SERVER_URL
+  process.env.GITHUB_SERVER_URL = 'https://github.com'
+  try {
+    await runRelease(inputs({ githubToken: 'secret-token' }), exec, makeApi())
+  } finally {
+    if (previousServerUrl === undefined) delete process.env.GITHUB_SERVER_URL
+    else process.env.GITHUB_SERVER_URL = previousServerUrl
+  }
 
   const lsRemoteOptions = exec.optionsFor('git', 'ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v1.2.3')
   const pushOptions = exec.optionsFor('git', 'push', '--no-verify', 'origin', 'refs/tags/v1.2.3:refs/tags/v1.2.3')
@@ -539,15 +546,12 @@ test('runRelease verifies target repository access before creating a tag', async
   const exec = makeExec()
   const api = makeApi({
     checkAuth: () => {
-      throw new Error('GET .../repos/goeselt/dispatch: HTTP 403')
+      throw new Error('GET .../repos/open/dispatch: HTTP 403')
     },
   })
 
-  await assert.rejects(
-    runRelease(inputs({ releaseContext: { repository: 'goeselt/dispatch' } }), exec, api),
-    /HTTP 403/,
-  )
-  assert.deepEqual(api.callFor('checkAuth'), ['checkAuth', 'goeselt/dispatch'])
+  await assert.rejects(runRelease(inputs({ releaseContext: { repository: 'open/dispatch' } }), exec, api), /HTTP 403/)
+  assert.deepEqual(api.callFor('checkAuth'), ['checkAuth', 'open/dispatch'])
   assert.equal(
     exec.calls.some((c) => c[0] === 'git' && c[1] === 'tag'),
     false,

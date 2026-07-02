@@ -67,6 +67,14 @@ test('gitAuthEnv resets generic and URL-specific extraheaders before appending o
   })
 })
 
+test('gitAuthEnv throws when GITHUB_SERVER_URL is empty or unset', () => {
+  for (const value of [undefined, '', '/']) {
+    withEnv({ GITHUB_SERVER_URL: value, GIT_CONFIG_COUNT: undefined }, () => {
+      assert.throws(() => gitAuthEnv('secret-token'), /GITHUB_SERVER_URL is not set/)
+    })
+  }
+})
+
 test('gitAuthEnv appends after GIT_CONFIG_* already present in the environment', () => {
   withEnv({ GITHUB_SERVER_URL: 'https://github.com', GIT_CONFIG_COUNT: '2' }, () => {
     const env = gitAuthEnv('secret-token')

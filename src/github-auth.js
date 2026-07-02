@@ -30,7 +30,10 @@ function needsGitHubToken(name, args) {
 // 0..GIT_CONFIG_COUNT-1), so we never overwrite or shadow config the runner injected through these variables.
 // GIT_TERMINAL_PROMPT=0 makes a too-old git fail fast instead of hanging on a credential prompt.
 function gitAuthEnv(token) {
-  const serverUrl = (process.env['GITHUB_SERVER_URL'] || 'https://github.com').replace(/\/+$/, '')
+  const serverUrl = (process.env['GITHUB_SERVER_URL'] || '').replace(/\/+$/, '')
+  if (!serverUrl) {
+    throw new Error('GITHUB_SERVER_URL is not set; cannot scope the GitHub token to the remote')
+  }
   const urlKey = `http.${serverUrl}/.extraheader`
   const header = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
 

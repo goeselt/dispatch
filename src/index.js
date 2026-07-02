@@ -39,10 +39,10 @@ function readDefaultBranch(eventPath) {
   }
 }
 
-function exec(name, args, { allowFailure = false, input, env } = {}) {
+function exec(name, args, { allowFailure = false, input: stdin, env } = {}) {
   try {
-    const opts = { encoding: 'utf8', stdio: [input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] }
-    if (input !== undefined) opts.input = input
+    const opts = { encoding: 'utf8', stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] }
+    if (stdin !== undefined) opts.input = stdin
     if (env) opts.env = env
     const stdout = execFileSync(name, args, opts)
     return { status: 0, stdout, stderr: '' }
@@ -61,8 +61,10 @@ let inputs = {}
 async function main() {
   const token = input('GITHUB-TOKEN')
   const actor = process.env['GITHUB_ACTOR'] || 'github-actions[bot]'
-  inputs = {
-    releaseTag: input('RELEASE-TAG'),
+  // releaseTag is assigned before the inputs that can throw while parsing (parseBool/parseMakeLatest), so a parse
+  // failure still produces a failure summary that names the release tag instead of "-".
+  inputs = { releaseTag: input('RELEASE-TAG') }
+  Object.assign(inputs, {
     createTag: parseBool(input('CREATE-TAG', 'true'), 'create-tag'),
     createRelease: parseBool(input('CREATE-RELEASE', 'true'), 'create-release'),
     allowNonDefaultBranch: parseBool(input('ALLOW-NON-DEFAULT-BRANCH', 'false'), 'allow-non-default-branch'),
@@ -83,7 +85,7 @@ async function main() {
       repository: process.env['GITHUB_REPOSITORY'] || '',
       defaultBranch: readDefaultBranch(process.env['GITHUB_EVENT_PATH']),
     },
-  }
+  })
 
   const api = createClient(token, {
     onRetry: ({ method, status, attempt, maxAttempts, delayMs }) =>

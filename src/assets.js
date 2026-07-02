@@ -51,6 +51,13 @@ function walk(dir) {
 function expandGlob(pattern, cwd = process.cwd()) {
   if (path.isAbsolute(pattern))
     throw new Error(`asset pattern ${pattern} must be relative to the workspace. ${ASSET_HELP}`)
+  // Globs here match a single path segment (* and ? never cross /). A ** would silently degrade to *, matching one
+  // level and producing a confusing "matched no files"; rejecting it names the actual problem.
+  if (pattern.includes('**')) {
+    throw new Error(
+      `asset pattern ${pattern} uses a recursive glob (**), which is not supported. Globs match a single path segment; list each directory level explicitly, for example dist/*/release.zip.`,
+    )
+  }
   const normalized = pattern.split(path.sep).join('/')
   const segments = normalized.split('/')
   const firstGlob = segments.findIndex((segment) => hasGlobMeta(segment))

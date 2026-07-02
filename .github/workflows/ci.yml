@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: read # Least-privilege default
 
 defaults:
   run:
@@ -21,14 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
-      pull-requests: write
+      contents: read # Required to check out the repository.
+      pull-requests: write # Required to post/update PR comments.
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
-          persist-credentials: false
 
       - name: Run Tests
         run: npm test
@@ -36,13 +35,13 @@ jobs:
       - name: Pedant
         id: pedant
         continue-on-error: true
-        uses: goeselt/pedant@13ee279ee25edf247435a1e833de83a3f13c4616 # v1.2.5
+        uses: goeselt/pedant@37e00e1bd7cb6c0ddb5f3765593e344620b0c44b # v1.4.1
         with:
           summary-github-step: true
 
       - name: Publish Pedant Report
         if: always()
-        uses: goeselt/remark@c2de02a492be4f6f11cd258c86e273a77186c86b # v1.0.5
+        uses: goeselt/remark@3863bca7cfacbc5eb562791ac3a04713346f602c # v1.0.6
         with:
           body: ${{ steps.pedant.outputs.summary }}
           comment-key: pedant

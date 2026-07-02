@@ -2,31 +2,31 @@
 
 ## Design
 
-Pure Node.js standard library -- no runtime dependencies, no build step. `index.js` is committed as-is and referenced
-directly by `action.yml` (`runs.using: node24`).
+Pure Node.js standard library -- no runtime dependencies, no build step. The source lives under `src/`. `src/index.js`
+is committed as-is and referenced directly by `action.yml` (`runs.using: node24`, `main: src/index.js`).
 
 The project is intentionally small. Prefer keeping the release flow easy to read over adding abstractions that only save
-a few lines. A future maintainer should be able to understand the action by reading `index.js`, then the section headers
-in `release.js`.
+a few lines. A future maintainer should be able to understand the action by reading `src/index.js`, then the section
+headers in `src/release.js`.
 
-| File                 | Responsibility                                                                               |
-| -------------------- | -------------------------------------------------------------------------------------------- |
-| `action.yml`         | Public GitHub Action metadata: inputs, outputs, runtime.                                     |
-| `index.js`           | GitHub Actions adapter: input/env parsing, command execution, outputs.                       |
-| `assets.js`          | Workspace-contained asset path and glob resolution.                                          |
-| `github-api.js`      | GitHub REST client (`fetch`-based) for release auth, lookup, and create, with retry/backoff. |
-| `github-auth.js`     | Scoped `github-token` injection for Git network commands.                                    |
-| `release-context.js` | Pure helpers for interpreting the Actions ref/branch context.                                |
-| `signing.js`         | GPG key import into a throwaway keyring and tag-signing configuration.                       |
-| `summary.js`         | Workflow command escaping, step summaries, and failure recovery guidance.                    |
-| `tags.js`            | Git tag name validation and semantic floating tag validation.                                |
-| `release.js`         | Testable release behavior: guards, validation, Git and REST calls, summaries.                |
-| `*.test.js`          | Unit tests with fake command execution; no network or real repository writes.                |
-| `README.md`          | User-facing examples, retry model, release guards, input reference.                          |
+| File                     | Responsibility                                                                               |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `action.yml`             | Public GitHub Action metadata: inputs, outputs, runtime.                                     |
+| `src/index.js`           | GitHub Actions adapter: input/env parsing, command execution, outputs.                       |
+| `src/assets.js`          | Workspace-contained asset path and glob resolution.                                          |
+| `src/github-api.js`      | GitHub REST client (`fetch`-based) for release auth, lookup, and create, with retry/backoff. |
+| `src/github-auth.js`     | Scoped `github-token` injection for Git network commands.                                    |
+| `src/release-context.js` | Pure helpers for interpreting the Actions ref/branch context.                                |
+| `src/signing.js`         | GPG key import into a throwaway keyring and tag-signing configuration.                       |
+| `src/summary.js`         | Workflow command escaping, step summaries, and failure recovery guidance.                    |
+| `src/tags.js`            | Git tag name validation and semantic floating tag validation.                                |
+| `src/release.js`         | Testable release behavior: guards, validation, Git and REST calls, summaries.                |
+| `src/*.test.js`          | Unit tests with fake command execution; no network or real repository writes.                |
+| `README.md`              | User-facing examples, retry model, release guards, input reference.                          |
 
 The action runs inside a checkout, but it does not depend on checkout-persisted credentials for release writes. The
-`github-token` input is never written to `process.env` or `.git/config`. GitHub REST calls (`github-api.js`) send it as
-an `Authorization: Bearer` header against `GITHUB_API_URL`, the REST base Actions exports for the active host
+`github-token` input is never written to `process.env` or `.git/config`. GitHub REST calls (`src/github-api.js`) send it
+as an `Authorization: Bearer` header against `GITHUB_API_URL`, the REST base Actions exports for the active host
 (github.com, GitHub Enterprise Server, or `*.ghe.com`); the client never classifies hosts itself, fails closed when
 `GITHUB_API_URL` is absent (so an Enterprise token is never sent to a default public host), sends the required
 `User-Agent`, and retries transient failures (retryable statuses for any method, network errors for idempotent methods
@@ -91,18 +91,18 @@ before the concrete tag is created or pushed.
 
 ## Code Organization
 
-`release.js` keeps the release orchestration and the Git commands together. Reusable or security-sensitive helpers live
-in focused modules:
+`src/release.js` keeps the release orchestration and the Git commands together. Reusable or security-sensitive helpers
+live in focused modules:
 
-- `assets.js` for asset path/glob validation.
-- `github-api.js` for the `fetch`-based GitHub REST client.
-- `github-auth.js` for scoped token injection into Git network commands.
-- `release-context.js` for ref/branch context helpers.
-- `signing.js` for temporary GPG setup.
-- `summary.js` for workflow output and failure guidance.
-- `tags.js` for tag validation.
+- `src/assets.js` for asset path/glob validation.
+- `src/github-api.js` for the `fetch`-based GitHub REST client.
+- `src/github-auth.js` for scoped token injection into Git network commands.
+- `src/release-context.js` for ref/branch context helpers.
+- `src/signing.js` for temporary GPG setup.
+- `src/summary.js` for workflow output and failure guidance.
+- `src/tags.js` for tag validation.
 
-Inside `release.js`, keep new helpers close to their section (the `// Section` header comments match these names):
+Inside `src/release.js`, keep new helpers close to their section (the `// Section` header comments match these names):
 
 - Input parsing
 - Release context guard
@@ -112,27 +112,27 @@ Inside `release.js`, keep new helpers close to their section (the `// Section` h
 When adding a new input, update all of these together:
 
 - `action.yml`
-- `index.js`
+- `src/index.js`
 - `README.md`
-- `release.test.js`
+- `src/release.test.js`
 
-Token scoping for Git lives in `github-auth.js`, not in `release.js`: `withGitHubToken` wraps `exec` so that Git network
-commands receive the `github-token`, and `needsGitHubToken` decides which commands that covers. REST calls are
-authenticated separately inside `github-api.js`.
+Token scoping for Git lives in `src/github-auth.js`, not in `src/release.js`: `withGitHubToken` wraps `exec` so that Git
+network commands receive the `github-token`, and `needsGitHubToken` decides which commands that covers. REST calls are
+authenticated separately inside `src/github-api.js`.
 
 When adding a new Git command, route it through the injected `exec` function so tests can assert the exact command
-without touching the network. If it is a network-facing `git` verb, update `needsGitHubToken` in `github-auth.js` so it
-is authenticated. New GitHub operations belong on the `github-api.js` client (injected into `runRelease` as `api`), so
-tests can stub them without real network access.
+without touching the network. If it is a network-facing `git` verb, update `needsGitHubToken` in `src/github-auth.js` so
+it is authenticated. New GitHub operations belong on the `src/github-api.js` client (injected into `runRelease` as
+`api`), so tests can stub them without real network access.
 
 ## Logging
 
-Dispatch writes plain `[dispatch] ...` progress lines via `logInfo` (in `summary.js`) so a human or a coding agent
+Dispatch writes plain `[dispatch] ...` progress lines via `logInfo` (in `src/summary.js`) so a human or a coding agent
 reading the workflow log can follow which branch the run took and confirm it behaved as expected. Keep these sparse and
 decision-level: emit one line per branch actually taken (tag created vs reused, release created/reused/skipped, floating
 tag updated, signing enabled, a non-default-branch release), not per step. Problems use `writeWarning` (a `::warning`
-annotation) or the `::error` annotation in `index.js`; retries are surfaced through the client's `onRetry` callback,
-which `index.js` wires to `logInfo`. The rich human view stays in the GitHub step summary (`buildStepSummary`), a
+annotation) or the `::error` annotation in `src/index.js`; retries are surfaced through the client's `onRetry` callback,
+which `src/index.js` wires to `logInfo`. The rich human view stays in the GitHub step summary (`buildStepSummary`), a
 separate channel from the log stream.
 
 ## Development Setup

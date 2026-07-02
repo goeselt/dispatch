@@ -67,11 +67,11 @@ permissions:
   contents: write
 
 steps:
-  - uses: actions/checkout@v4
+  - uses: actions/checkout@<sha>
     with:
       fetch-depth: 0
 
-  - uses: goeselt/dispatch@v1
+  - uses: goeselt/dispatch@<sha>
     with:
       release-tag: ${{ steps.version.outputs.release-tag }}
       major-tag: ${{ steps.version.outputs.major-tag }}
