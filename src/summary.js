@@ -134,6 +134,9 @@ function failureNextStep(error) {
   if (/asset pattern .*matched no files/i.test(message)) {
     return 'Check that the glob pattern is correct and that a build step creates matching files before dispatch runs.'
   }
+  if (/recursive glob/i.test(message)) {
+    return 'Replace ** with single-segment globs, listing each directory level explicitly, for example dist/*/release.zip.'
+  }
   if (/asset .*workspace|asset .*regular file|asset pattern .*workspace/i.test(message)) {
     return ASSET_HELP
   }
@@ -145,6 +148,11 @@ function failureNextStep(error) {
   }
   if (/bad credentials|must authenticate|could not read Username|HTTP 401|HTTP 403/i.test(message)) {
     return 'Check the github-token input and repository permissions, then rerun dispatch.'
+  }
+  // GitHub answers 404 instead of 403 for a private repository the token cannot see, so a 404 is as likely a
+  // permissions problem as a wrong repository name.
+  if (/HTTP 404/i.test(message)) {
+    return 'Check that the repository exists and that the github-token can access it, then rerun dispatch.'
   }
   if (/force-with-lease/i.test(message)) {
     return 'Another run updated the floating tag first. Rerun dispatch after the newer release finishes.'

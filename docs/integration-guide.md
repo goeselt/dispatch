@@ -23,7 +23,7 @@ Create a release without intent, for example in a manually triggered workflow or
   with:
     fetch-depth: 0
 
-- uses: goeselt/dispatch@v1
+- uses: goeselt/dispatch@<sha>
   with:
     release-tag: v1.2.3
 ```
@@ -31,7 +31,7 @@ Create a release without intent, for example in a manually triggered workflow or
 ### Release With Binary Assets
 
 ```yaml
-- uses: goeselt/dispatch@v1
+- uses: goeselt/dispatch@<sha>
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     major-tag: ${{ steps.version.outputs.major-tag }}
@@ -42,7 +42,8 @@ Create a release without intent, for example in a manually triggered workflow or
       dist/checksums.txt
 ```
 
-Glob patterns are supported: `dist/*.tar.gz`.
+Glob patterns are supported: `dist/*.tar.gz`. A glob (`*`, `?`) matches a single path segment; recursive `**` patterns
+are rejected -- list each directory level explicitly, for example `dist/*/release.zip`.
 
 Assets must be existing regular files inside the checked-out workspace. Absolute paths, parent-directory traversal, and
 symlinks that resolve outside the workspace are rejected before the GitHub Release is created.
@@ -61,11 +62,11 @@ permissions:
   contents: write
 
 steps:
-  - uses: actions/checkout@v4
+  - uses: actions/checkout@<sha>
     with:
       fetch-depth: 0
 
-  - uses: goeselt/dispatch@v1
+  - uses: goeselt/dispatch@<sha>
     with:
       release-tag: v1.2.4
       allow-non-default-branch: true
@@ -90,7 +91,7 @@ When another tool owns the GitHub Release, set `create-release: false` to push o
 floating tag updates:
 
 ```yaml
-- uses: goeselt/dispatch@v1
+- uses: goeselt/dispatch@<sha>
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     create-release: false
@@ -111,7 +112,7 @@ Pass a base64-encoded GPG private key to sign all annotated tags created by the 
 with `git verify-tag <tag>` after importing your public key.
 
 ```yaml
-- uses: goeselt/dispatch@v1
+- uses: goeselt/dispatch@<sha>
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     major-tag: ${{ steps.version.outputs.major-tag }}
@@ -130,7 +131,7 @@ and `git-user-email` to an identity associated with the key, and register the ke
 owns the release:
 
 ```yaml
-- uses: goeselt/dispatch@v1
+- uses: goeselt/dispatch@<sha>
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -147,7 +148,7 @@ tag-triggered workflow dispatch:
 
 ```yaml
 - id: app
-  uses: actions/create-github-app-token@v1
+  uses: actions/create-github-app-token@<sha>
   with:
     app-id: ${{ vars.RELEASE_APP_ID }}
     private-key: ${{ secrets.RELEASE_APP_KEY }}
@@ -157,7 +158,7 @@ tag-triggered workflow dispatch:
     token: ${{ steps.app.outputs.token }}
     persist-credentials: false
 
-- uses: goeselt/dispatch@v1
+- uses: goeselt/dispatch@<sha>
   with:
     release-tag: ${{ steps.version.outputs.release-tag }}
     github-token: ${{ steps.app.outputs.token }}

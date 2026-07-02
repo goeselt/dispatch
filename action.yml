@@ -32,7 +32,7 @@ inputs:
     required: false
     default: ''
   assets:
-    description: 'Newline-separated list of existing workspace files or glob patterns to upload. Every path must exist and every glob must match.'
+    description: 'Newline-separated list of existing workspace files or glob patterns to upload. Every path must exist and every glob must match. Globs match a single path segment; recursive ** patterns are rejected.'
     required: false
     default: ''
   major-tag:
@@ -72,4 +72,4 @@ outputs:
 
 runs:
   using: node24
-  main: index.js
+  main: src/index.js

@@ -33,6 +33,15 @@ test('resolveAssets fails when a glob matches no files', () => {
   assert.throws(() => resolveAssets(['dist/*.zip'], dir), /matched no files/)
 })
 
+test('expandGlob rejects recursive ** patterns instead of silently matching one level', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
+  fs.mkdirSync(path.join(dir, 'dist', 'linux'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'dist', 'linux', 'tool.zip'), '')
+
+  assert.throws(() => expandGlob('dist/**', dir), /recursive glob/)
+  assert.throws(() => resolveAssets(['dist/**/*.zip'], dir), /recursive glob/)
+})
+
 test('validateAssetPath rejects assets outside the workspace', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-'))
   const dir = path.join(root, 'work')

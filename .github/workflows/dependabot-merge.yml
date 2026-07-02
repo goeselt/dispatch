@@ -6,10 +6,11 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: read
+  contents: read # Least-privilege default
+  pull-requests: read # Required by dependabot/fetch-metadata to read PR metadata and determine the update type.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 defaults:
@@ -19,25 +20,29 @@ defaults:
 jobs:
   auto-merge:
     name: Auto-Merge
-    if: github.actor == 'dependabot[bot]'
+    # Require both the triggering actor and the PR author to be Dependabot: `github.actor` alone is whoever
+    # caused the latest event, so a maintainer push to a Dependabot branch (or vice versa) must not auto-approve.
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write # Required to perform the squash merge into the target branch.
+      pull-requests: write # Required to approve the PR and enable auto-merge (supersedes the workflow-level read).
     steps:
-      - id: app
-        name: Generate App Token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_KEY }}
+      - id: metadata
+        name: Fetch Dependabot Metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
       - name: Approve PR
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr review --approve "$PR_URL"
 
       - name: Enable Auto-Merge
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --squash "$PR_URL"

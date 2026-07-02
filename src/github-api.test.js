@@ -253,6 +253,108 @@ test('createRelease with assets drafts, uploads, then publishes', async () => {
   }
 })
 
+// createRelease must not leave an orphaned draft behind: the by-tag lookup only returns published releases, so a
+// leftover draft with partial assets would be invisible to a rerun and could be published by hand.
+test('createRelease deletes the draft and rethrows when an asset upload fails', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-api-'))
+  const assetPath = path.join(dir, 'artifact.bin')
+  fs.writeFileSync(assetPath, 'payload-bytes')
+
+  try {
+    await withApiUrl('https://api.github.com', () =>
+      withFetch(
+        (url, options) => {
+          if (options.method === 'POST' && url.endsWith('/releases')) {
+            return fakeResponse({
+              status: 201,
+              body: { id: 9, html_url: '', upload_url: 'https://uploads.example/repos/o/n/releases/9/assets{?name}' },
+            })
+          }
+          if (options.method === 'POST') return fakeResponse({ status: 422, body: { message: 'upload rejected' } })
+          return fakeResponse({ status: 204, body: '', json: false })
+        },
+        async (calls) => {
+          await assert.rejects(
+            createClient('secret').createRelease('owner/name', 'v1.2.3', [assetPath], {}),
+            /HTTP 422 upload rejected/,
+          )
+          const deletion = calls.at(-1)
+          assert.equal(deletion.options.method, 'DELETE')
+          assert.equal(deletion.url, 'https://api.github.com/repos/owner/name/releases/9')
+        },
+      ),
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('createRelease surfaces the original failure even when the draft cleanup fails', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-api-'))
+  const assetPath = path.join(dir, 'artifact.bin')
+  fs.writeFileSync(assetPath, 'payload-bytes')
+
+  try {
+    await withApiUrl('https://api.github.com', () =>
+      withFetch(
+        (url, options) => {
+          if (options.method === 'POST' && url.endsWith('/releases')) {
+            return fakeResponse({
+              status: 201,
+              body: { id: 9, html_url: '', upload_url: 'https://uploads.example/repos/o/n/releases/9/assets{?name}' },
+            })
+          }
+          if (options.method === 'POST') return fakeResponse({ status: 422, body: { message: 'upload rejected' } })
+          return fakeResponse({ status: 403, body: { message: 'cannot delete' } })
+        },
+        async () => {
+          await assert.rejects(
+            createClient('secret').createRelease('owner/name', 'v1.2.3', [assetPath], {}),
+            /HTTP 422 upload rejected/,
+          )
+        },
+      ),
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('createRelease deletes the draft when publishing fails', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-api-'))
+  const assetPath = path.join(dir, 'artifact.bin')
+  fs.writeFileSync(assetPath, 'payload-bytes')
+
+  try {
+    await withApiUrl('https://api.github.com', () =>
+      withFetch(
+        (url, options) => {
+          if (options.method === 'POST' && url.endsWith('/releases')) {
+            return fakeResponse({
+              status: 201,
+              body: { id: 9, html_url: '', upload_url: 'https://uploads.example/repos/o/n/releases/9/assets{?name}' },
+            })
+          }
+          if (options.method === 'POST') return fakeResponse({ status: 201, body: { id: 1 } })
+          if (options.method === 'PATCH') return fakeResponse({ status: 422, body: { message: 'publish rejected' } })
+          return fakeResponse({ status: 204, body: '', json: false })
+        },
+        async (calls) => {
+          await assert.rejects(
+            createClient('secret', { sleep: noSleep }).createRelease('owner/name', 'v1.2.3', [assetPath], {}),
+            /HTTP 422 publish rejected/,
+          )
+          const deletion = calls.at(-1)
+          assert.equal(deletion.options.method, 'DELETE')
+          assert.equal(deletion.url, 'https://api.github.com/repos/owner/name/releases/9')
+        },
+      ),
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // Transient-failure hardening
 
 test('request sends an identifying User-Agent, which GitHub requires', async () => {
@@ -260,7 +362,7 @@ test('request sends an identifying User-Agent, which GitHub requires', async () 
     () => fakeResponse({ status: 200, body: {} }),
     async (calls) => {
       await request('tok', 'GET', 'https://api.example/x')
-      assert.equal(calls[0].options.headers['User-Agent'], 'goeselt-dispatch')
+      assert.equal(calls[0].options.headers['User-Agent'], 'open-dispatch')
     },
   )
 })

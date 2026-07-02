@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: read # Least-privilege default
 
 defaults:
   run:
@@ -21,24 +21,19 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write # Required to push the release commit and tag.
+      id-token: write # Required to create a SLSA attestation for the release.
+      attestations: write # Required to create a SLSA attestation for the release.
     steps:
-      - id: app
-        name: Generate App Token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_KEY }}
-
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 0 # intent release needs full history to find the previous release tag
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
+          fetch-depth: 0 # full history needed to find the previous release tag
 
       - id: intent
         name: Intent Release
-        uses: goeselt/intent@b0f6cb890972394cb60a0f65cf866dc76a33fef4 # v1.1.5
+        uses: goeselt/intent@0ab5bbaa2e12d54e405da9e9664ac3328f2c274a # v1.2.3
         with:
           initial-version: '1.0.0'
 
@@ -50,13 +45,13 @@ jobs:
 
       - name: Commit Version
         if: steps.intent.outputs.release-needed == 'true'
-        uses: goeselt/scribe@732387b7af0ebcabc4653253cb5865a31a3cd485 # v1.2.2
+        uses: goeselt/scribe@2d727b24c709116d2951b61d0091ed20bf777b72 # v1.2.3
         with:
           files: package.json
-          message: 'chore: release ${{ steps.intent.outputs.release-tag }}'
-          github-token: ${{ steps.app.outputs.token }}
-          git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
-          git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}
+          message: 'chore: bump ${{ steps.intent.outputs.release-tag }}'
+          github-token: ${{ secrets.CONTENT_WRITE_PAT }}
+          git-user-name: ${{ secrets.RELEASE_SIGNING_USER }}
+          git-user-email: ${{ secrets.RELEASE_SIGNING_EMAIL }}
           signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
 
       - name: Release
@@ -66,7 +61,6 @@ jobs:
           release-tag: ${{ steps.intent.outputs.release-tag }}
           major-tag: ${{ steps.intent.outputs.major-tag }}
           minor-tag: ${{ steps.intent.outputs.minor-tag }}
-          github-token: ${{ steps.app.outputs.token }}
-          git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
-          git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}
+          git-user-name: ${{ secrets.RELEASE_SIGNING_USER }}
+          git-user-email: ${{ secrets.RELEASE_SIGNING_EMAIL }}
           signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}

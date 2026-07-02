@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: read # Least-privilege default
 
 defaults:
   run:
@@ -22,10 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read
-      pull-requests: write
+      contents: read # Required to read repository commits.
+      pull-requests: write # Required to post/update PR comments.
     steps:
       - name: Validate Intent
-        uses: goeselt/intent@b0f6cb890972394cb60a0f65cf866dc76a33fef4 # v1.1.5
+        uses: goeselt/intent@0ab5bbaa2e12d54e405da9e9664ac3328f2c274a # v1.2.3
         with:
           pr-comment: true

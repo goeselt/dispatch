@@ -4,8 +4,24 @@ GitHub Action that creates a release tag, creates a GitHub Release, uploads asse
 tags. Designed as the publish step after [`goeselt/intent`](https://github.com/goeselt/intent) resolves the next
 semantic version.
 
-Use Dispatch when release creation should be boring, retry-safe, and guarded: it fails early for doubtful GitHub Actions
-contexts, verifies reused tags, keeps floating tags consistent, and treats missing release assets as release blockers.
+Publishing a release from a workflow usually means stitching together tag creation, the Release API, asset uploads, and
+floating-tag updates -- and making all of it safe to re-run. Dispatch does that as one guarded step:
+
+- **One publish step.** Creates the release tag and the GitHub Release, uploads assets, and refreshes floating
+  major/minor tags in a single action.
+- **Retry-safe by design.** Reuses existing tags and releases, so a re-run after a partial failure converges instead of
+  erroring or duplicating.
+- **Guarded before it writes.** Fails early on pull request events, tag refs, and non-default branches before touching
+  Git or the GitHub API.
+- **Verifies what it reuses.** A reused concrete tag must point at the current commit; with a signing key, existing tags
+  must pass `git verify-tag`.
+- **Missing assets block the release.** An asset path that does not exist, or a glob that matches nothing, fails the run
+  instead of publishing an incomplete release.
+- **Token stays scoped.** `github-token` is injected per command and removed afterward -- never written to `.git/config`
+  or left in the process environment.
+
+Use Dispatch when release creation should be boring, retry-safe, and guarded instead of a hand-rolled sequence of `gh`
+and `git` commands.
 
 ## Getting Started
 
@@ -21,14 +37,14 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@<sha>
         with:
           fetch-depth: 0
 
       - id: version
-        uses: goeselt/intent@v1
+        uses: goeselt/intent@<sha>
 
-      - uses: goeselt/dispatch@v1
+      - uses: goeselt/dispatch@<sha>
         if: steps.version.outputs.release-needed == 'true'
         with:
           release-tag: ${{ steps.version.outputs.release-tag }}
@@ -60,6 +76,9 @@ whitespace, control characters, refspec syntax, `..`, or option-like values begi
 
 When provided, `major-tag` and `minor-tag` must match the semantic `release-tag`. For `v1.2.3`, the only matching
 floating tags are `v1` and `v1.2`.
+
+Asset globs (`*`, `?`) match a single path segment; recursive `**` patterns are rejected -- list each directory level
+explicitly, for example `dist/*/release.zip`.
 
 | Input                      | Default                          | Description                                                                                     |
 | -------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------- |
