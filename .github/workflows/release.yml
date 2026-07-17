@@ -33,7 +33,7 @@ jobs:
 
       - id: intent
         name: Intent Release
-        uses: goeselt/intent@0ab5bbaa2e12d54e405da9e9664ac3328f2c274a # v1.2.3
+        uses: goeselt/intent@4ddbdcaca80e9eec590a81badeb0bc747fd65cbf # v1.3.0
         with:
           initial-version: '1.0.0'
 
