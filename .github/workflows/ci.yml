@@ -35,7 +35,7 @@ jobs:
       - name: Pedant
         id: pedant
         continue-on-error: true
-        uses: goeselt/pedant@191b4534d6be8e687f79f147ffafc5e86a2c108b # v1.4.2
+        uses: goeselt/pedant@25db5404475cfce3bd0b1a8153d22c695d03903a # v1.4.4
         with:
           summary-github-step: true
 
